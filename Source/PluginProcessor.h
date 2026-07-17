@@ -1,12 +1,13 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <atomic>
 
 //==============================================================================
 // EERIE - Mix Analyzer
 // Analysis-only, pass-through audio plugin. It taps the audio going through it
-// (the master bus in a DAW, or the input device in standalone) and will drive
-// the meters. It never changes the sound.
+// (the master bus in a DAW, or a loaded song in standalone) and drives the
+// meters. It never changes the sound.
 //==============================================================================
 class MixAnalyzerAudioProcessor : public juce::AudioProcessor
 {
@@ -42,7 +43,64 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
+    //==========================================================================
+    // Spectrum source. The audio thread keeps writing the latest mono samples
+    // into a rolling ring buffer; the GUI grabs the newest fftSize samples each
+    // frame. That means the display refresh follows the GUI timer (smooth),
+    // not the audio block size (which was making it choppy).
+    static constexpr int fftOrder = 13;             // 2^13 = 8192, matches Audacity
+    static constexpr int fftSize  = 1 << fftOrder;
+
+    void copyLatestSamples (float* dest) const noexcept;   // dest must hold fftSize
+
+    //==========================================================================
+    // File playback (standalone: load a song and play it through the analyzer).
+    // With no file loaded the plugin just passes host audio through.
+    void loadFile (const juce::File& file);
+    void togglePlayback();     // play / pause (keeps position)
+    void restart();            // jump to the start (of section or song) and play
+    void stopAndReset();       // stop and reset to the start; flatten the meters
+    bool isFilePlaying() const;
+    bool hasFileLoaded() const;
+    juce::String getLoadedFileName() const;
+
+    // When looping is on, playback repeats (the section if one is selected,
+    // otherwise the whole song). When off, it plays once and stops at the end.
+    void setLoopEnabled (bool shouldLoop);
+
+    // The audio thread can ask the message thread to stop (section end, no loop).
+    // The editor polls this from its timer. Returns true once per request.
+    bool consumeStopRequest() noexcept { return requestStop.exchange (false); }
+
+    // Section selection, in seconds. end <= start means "whole file".
+    void setSelection (double startSeconds, double endSeconds);
+    void clearSelection();
+
+    double getCurrentPositionSeconds() const;
+    double getLengthSeconds() const;
+
 private:
     //==========================================================================
+    void pushSample (float sample) noexcept;
+    void clearAnalysis() noexcept;                 // zero the ring buffer
+    double sectionStartOrZero() const noexcept;    // selection start, or 0
+
+    float ringBuffer[fftSize] = {};
+    std::atomic<int> writePos { 0 };
+    std::atomic<bool> loopEnabled { true };
+
+    //==========================================================================
+    juce::AudioFormatManager formatManager;
+    juce::TimeSliceThread readAheadThread { "fileReadAhead" };
+    std::unique_ptr<juce::AudioFormatReaderSource> readerSource;   // message-thread only
+    juce::AudioTransportSource transportSource;   // thread-safe on its own
+
+    juce::String loadedFileName;
+
+    std::atomic<bool> fileIsLoaded { false };
+    std::atomic<bool> requestStop  { false };
+    std::atomic<double> selectionStart { 0.0 };
+    std::atomic<double> selectionEnd   { 0.0 };
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MixAnalyzerAudioProcessor)
 };

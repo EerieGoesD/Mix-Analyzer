@@ -33,12 +33,15 @@ juce_generate_juce_header(MixAnalyzer)
 target_sources(MixAnalyzer PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
+    Source/WaveformDisplay.cpp
+    Source/MixLookAndFeel.cpp
 )
 
 target_compile_definitions(MixAnalyzer PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
+    JUCE_USE_MP3AUDIOFORMAT=1
 )
 
 target_link_libraries(MixAnalyzer
