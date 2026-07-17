@@ -109,13 +109,80 @@ MixAnalyzerAudioProcessorEditor::MixAnalyzerAudioProcessorEditor (MixAnalyzerAud
         }
     };
 
+    addAndMakeVisible (screenshotButton);
+    screenshotButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    screenshotButton.setTooltip ("Save a PNG picture of the spectrum as it looks now.");
+    screenshotButton.onClick = [this]
+    {
+        const auto img = spectrum.createComponentSnapshot (spectrum.getLocalBounds());
+        chooser = std::make_unique<juce::FileChooser> ("Save spectrum image", juce::File{}, "*.png");
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                              [img] (const juce::FileChooser& fc)
+        {
+            auto f = fc.getResult();
+            if (f == juce::File{})
+                return;
+
+            f = f.withFileExtension ("png");   // always PNG
+
+            f.deleteFile();
+            if (auto os = f.createOutputStream())
+            {
+                juce::PNGImageFormat fmt;
+                fmt.writeImageToStream (img, *os);
+            }
+        });
+    };
+
+    // Footer links (bigger and readable, with visible separators).
+    const juce::Font footerFont = MixLookAndFeel::uiFont (15.0f, false);
+
+    auto setupLink = [this, footerFont] (juce::HyperlinkButton& link, juce::Colour col)
+    {
+        addAndMakeVisible (link);
+        link.setColour (juce::HyperlinkButton::textColourId, col);
+        link.setFont (footerFont, false, juce::Justification::centred);
+    };
+    setupLink (coffeeLink,   juce::Colour (0xfffacc15));   // yellow
+    setupLink (reportLink,   MixColours::textDim);
+    setupLink (feedbackLink, MixColours::textDim);
+    setupLink (featureLink,  MixColours::textDim);
+    setupLink (eerieLink,    MixColours::accentH);
+
+    // Separators are empty spacers; the vertical divider bar is drawn in paint().
+    for (auto* s : { &footerSep1, &footerSep2, &footerSep3, &footerSep4 })
+        addAndMakeVisible (*s);
+
+    addAndMakeVisible (madeByLabel);
+    madeByLabel.setText ("Made by", juce::dontSendNotification);
+    madeByLabel.setFont (footerFont);
+    madeByLabel.setColour (juce::Label::textColourId, MixColours::textDim);
+    madeByLabel.setBorderSize (juce::BorderSize<int> (0));   // kill the default 5px side margin
+    madeByLabel.setJustificationType (juce::Justification::centredRight);
+
     liveTabButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     historyTabButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     liveTabButton.onClick    = [this] { showHistory (false); };
     historyTabButton.onClick = [this] { showHistory (true);  };
 
+    // Left sidebar menu (NoteStash pattern).
+    addAndMakeVisible (menuButton);
+    menuButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    menuButton.setTooltip ("Show / hide the meter menu");
+    menuButton.onClick = [this] { toggleSidebar(); };
+
+    for (auto* n : { &navSpectrum, &navSoundField, &navLoudness })
+    {
+        addAndMakeVisible (*n);
+        n->setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    }
+    navSpectrum.onClick   = [this] { showMeter (0); };
+    navSoundField.onClick = [this] { showMeter (1); };
+    navLoudness.onClick   = [this] { showMeter (2); };
+
     setTransportEnabled (false);
     showHistory (false);
+    showMeter (0);
 
     waveform.onSelectionChanged = [this] (double s, double e) { processorRef.setSelection (s, e); };
     waveform.onSelectionCleared = [this] { processorRef.clearSelection(); };
@@ -188,6 +255,7 @@ void MixAnalyzerAudioProcessorEditor::showHistory (bool showHist)
     spectrum.setVisible (! showHist);
     settingsButton.setVisible (! showHist);
     spectrumExportButton.setVisible (! showHist);
+    screenshotButton.setVisible (! showHist);
     recordButton.setVisible (! showHist);
     recordIntervalBox.setVisible (! showHist);
     history.setVisible (showHist);
@@ -199,6 +267,56 @@ void MixAnalyzerAudioProcessorEditor::showHistory (bool showHist)
                                 showHist ? MixColours::accent : juce::Colours::transparentBlack);
     liveTabButton.repaint();
     historyTabButton.repaint();
+}
+
+void MixAnalyzerAudioProcessorEditor::showMeter (int meter)
+{
+    currentMeter = meter;
+    const bool spec = (meter == 0);
+
+    liveTabButton.setVisible (spec);
+    historyTabButton.setVisible (spec);
+
+    if (spec)
+    {
+        showHistory (historyMode);   // restores spectrum/history + their controls
+    }
+    else
+    {
+        spectrum.setVisible (false);
+        history.setVisible (false);
+        settingsButton.setVisible (false);
+        spectrumExportButton.setVisible (false);
+        screenshotButton.setVisible (false);
+        recordButton.setVisible (false);
+        recordIntervalBox.setVisible (false);
+    }
+
+    updateNavHighlight();
+    resized();
+    repaint();
+}
+
+void MixAnalyzerAudioProcessorEditor::toggleSidebar()
+{
+    sidebarOpen = ! sidebarOpen;
+    for (auto* n : { &navSpectrum, &navSoundField, &navLoudness })
+        n->setVisible (sidebarOpen);
+    resized();
+    repaint();
+}
+
+void MixAnalyzerAudioProcessorEditor::updateNavHighlight()
+{
+    auto setNav = [] (juce::TextButton& b, bool active)
+    {
+        b.setColour (juce::TextButton::buttonColourId,
+                     active ? MixColours::accent : juce::Colours::transparentBlack);
+        b.repaint();
+    };
+    setNav (navSpectrum,   currentMeter == 0);
+    setNav (navSoundField, currentMeter == 1);
+    setNav (navLoudness,   currentMeter == 2);
 }
 
 //==============================================================================
@@ -244,8 +362,8 @@ void MixAnalyzerAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.fillAll (MixColours::bg);
 
-    // Header: app name in indigo with a soft glow.
-    auto header = getLocalBounds().removeFromTop (48).reduced (16, 0);
+    // Header: app name in indigo with a soft glow (shifted for the menu button).
+    auto header = getLocalBounds().removeFromTop (48).reduced (16, 0).withTrimmedLeft (34);
 
     g.setColour (MixColours::accent.withAlpha (0.35f));
     g.setFont (MixLookAndFeel::uiFont (19.0f, true));
@@ -267,6 +385,37 @@ void MixAnalyzerAudioProcessorEditor::paint (juce::Graphics& g)
 
     drawCaption (waveCaptionBounds, "Waveform  -  drag to select a section");
     drawCaption (spectrumCaptionBounds, "Spectrum");
+
+    // Sidebar background + right divider.
+    if (sidebarOpen && ! sidebarArea.isEmpty())
+    {
+        g.setColour (MixColours::surface);
+        g.fillRect (sidebarArea);
+        g.setColour (MixColours::border);
+        g.drawVerticalLine (sidebarArea.getRight() - 1, (float) sidebarArea.getY(), (float) sidebarArea.getBottom());
+    }
+
+    // Placeholder panel for meters not built yet.
+    if (currentMeter != 0 && ! meterArea.isEmpty())
+    {
+        g.setColour (MixColours::surface);
+        g.fillRoundedRectangle (meterArea.toFloat(), 8.0f);
+        g.setColour (MixColours::border);
+        g.drawRoundedRectangle (meterArea.toFloat(), 8.0f, 1.0f);
+        g.setColour (MixColours::textDim);
+        g.setFont (MixLookAndFeel::uiFont (15.0f, false));
+        g.drawText (currentMeter == 1 ? "Sound Field  -  coming next" : "Loudness  -  coming next",
+                    meterArea, juce::Justification::centred);
+    }
+
+    // Footer divider bars (real vertical lines, centered in each spacer).
+    g.setColour (MixColours::textDim);
+    for (auto* s : { &footerSep1, &footerSep2, &footerSep3, &footerSep4 })
+    {
+        const auto b = s->getBounds().toFloat();
+        const float cx = b.getCentreX();
+        g.drawLine (cx, b.getY() + 2.0f, cx, b.getBottom() - 2.0f, 1.4f);
+    }
 }
 
 //==============================================================================
@@ -274,7 +423,39 @@ void MixAnalyzerAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
 
+    menuButton.setBounds (10, 11, 30, 26);   // hamburger in the header
     bounds.removeFromTop (48);   // header (painted)
+
+    // Footer links along the very bottom, right-aligned and tight.
+    auto footerRow = bounds.removeFromBottom (30).reduced (16, 4);
+    const juce::Font ff = MixLookAndFeel::uiFont (15.0f, false);
+    const int fh = footerRow.getHeight();
+
+    auto fitW = [&ff] (const juce::String& t) { return juce::GlyphArrangement::getStringWidthInt (ff, t) + 2; };
+    coffeeLink.setSize   (fitW ("Support This Project"), fh);
+    madeByLabel.setSize  (fitW ("Made by"),  fh);
+    eerieLink.setSize    (fitW ("EERIE"),    fh);
+    reportLink.setSize   (fitW ("Report Issue"),    fh);
+    feedbackLink.setSize (fitW ("Feedback"),        fh);
+    featureLink.setSize  (fitW ("Suggest Feature"), fh);
+    for (auto* s : { &footerSep1, &footerSep2, &footerSep3, &footerSep4 })
+        s->setSize (13, fh);   // spacer; a vertical bar is drawn here in paint()
+
+    // { component, gap after it }. "Made by" -> "EERIE" is a tight 4px so it reads as one phrase.
+    struct FI { juce::Component* c; int gapAfter; };
+    FI seq[] = { { &coffeeLink, 12 }, { &footerSep1, 12 }, { &madeByLabel, 4 }, { &eerieLink, 12 },
+                 { &footerSep2, 12 }, { &reportLink, 12 }, { &footerSep3, 12 }, { &feedbackLink, 12 },
+                 { &footerSep4, 12 }, { &featureLink, 0 } };
+
+    int total = 0;
+    for (auto& e : seq) total += e.c->getWidth() + e.gapAfter;
+
+    int fx = footerRow.getRight() - total;   // right-aligned
+    for (auto& e : seq)
+    {
+        e.c->setBounds (fx, footerRow.getY(), e.c->getWidth(), fh);
+        fx += e.c->getWidth() + e.gapAfter;
+    }
 
     // Control strip: Load, transport icons, Loop, and the file name label.
     auto controls = bounds.removeFromTop (40).reduced (16, 5);
@@ -294,21 +475,35 @@ void MixAnalyzerAudioProcessorEditor::resized()
     waveCaptionBounds = bounds.removeFromTop (20).reduced (16, 0);
     waveform.setBounds (bounds.removeFromTop (110).reduced (16, 2));
 
+    // Meter section: collapsible left sidebar (nav) + the meter area to its right.
+    const int sbW = sidebarOpen ? 128 : 0;
+    sidebarArea = bounds.removeFromLeft (sbW);
+    if (sidebarOpen)
+    {
+        auto sb = sidebarArea.reduced (10, 6);
+        navSpectrum.setBounds   (sb.removeFromTop (30)); sb.removeFromTop (4);
+        navSoundField.setBounds (sb.removeFromTop (30)); sb.removeFromTop (4);
+        navLoudness.setBounds   (sb.removeFromTop (30));
+    }
+
     // Tab strip: Live / History on the left, Settings (live only) on the right.
     auto tabRow = bounds.removeFromTop (28).reduced (16, 0);
     liveTabButton.setBounds    (tabRow.removeFromLeft (56).withSizeKeepingCentre (56, 22));
     tabRow.removeFromLeft (4);
     historyTabButton.setBounds (tabRow.removeFromLeft (70).withSizeKeepingCentre (70, 22));
-    settingsButton.setBounds       (tabRow.removeFromRight (88).withSizeKeepingCentre (88, 22));
+    settingsButton.setBounds       (tabRow.removeFromRight (82).withSizeKeepingCentre (82, 22));
     tabRow.removeFromRight (6);
-    spectrumExportButton.setBounds (tabRow.removeFromRight (78).withSizeKeepingCentre (78, 22));
+    spectrumExportButton.setBounds (tabRow.removeFromRight (74).withSizeKeepingCentre (74, 22));
+    tabRow.removeFromRight (5);
+    screenshotButton.setBounds     (tabRow.removeFromRight (88).withSizeKeepingCentre (88, 22));
     tabRow.removeFromRight (6);
-    recordButton.setBounds         (tabRow.removeFromRight (88).withSizeKeepingCentre (88, 22));
+    recordButton.setBounds         (tabRow.removeFromRight (84).withSizeKeepingCentre (84, 22));
     tabRow.removeFromRight (4);
-    recordIntervalBox.setBounds    (tabRow.removeFromRight (88).withSizeKeepingCentre (88, 22));
+    recordIntervalBox.setBounds    (tabRow.removeFromRight (84).withSizeKeepingCentre (84, 22));
     spectrumCaptionBounds = {};   // tabs replace the caption
 
     auto viewArea = bounds.reduced (16, 2).withTrimmedBottom (12);
     spectrum.setBounds (viewArea);
     history.setBounds (viewArea);
+    meterArea = viewArea;   // used to draw the placeholder for Sound Field / Loudness
 }
