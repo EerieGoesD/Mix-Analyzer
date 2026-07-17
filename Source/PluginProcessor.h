@@ -48,7 +48,10 @@ public:
     // into a rolling ring buffer; the GUI grabs the newest fftSize samples each
     // frame. That means the display refresh follows the GUI timer (smooth),
     // not the audio block size (which was making it choppy).
-    static constexpr int fftOrder = 13;             // 2^13 = 8192, matches Audacity
+    // Ring-buffer / max analysis size. 32768 = the largest live-meter window;
+    // the display picks a smaller slice. (The Analyze-selection snapshot reads
+    // the file directly, so its bigger sizes do not need this buffer.)
+    static constexpr int fftOrder = 15;             // 2^15 = 32768
     static constexpr int fftSize  = 1 << fftOrder;
 
     void copyLatestSamples (float* dest) const noexcept;   // dest must hold fftSize
@@ -79,6 +82,11 @@ public:
     double getCurrentPositionSeconds() const;
     double getLengthSeconds() const;
 
+    // For the History analyzer: the loaded file + current selection (seconds).
+    juce::File getLoadedFile() const                    { return loadedFile; }
+    double getSelectionStartSeconds() const noexcept    { return selectionStart.load(); }
+    double getSelectionEndSeconds() const noexcept      { return selectionEnd.load(); }
+
 private:
     //==========================================================================
     void pushSample (float sample) noexcept;
@@ -96,6 +104,7 @@ private:
     juce::AudioTransportSource transportSource;   // thread-safe on its own
 
     juce::String loadedFileName;
+    juce::File   loadedFile;
 
     std::atomic<bool> fileIsLoaded { false };
     std::atomic<bool> requestStop  { false };

@@ -3,6 +3,8 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "WaveformDisplay.h"
+#include "SpectrumDisplay.h"
+#include "HistoryAnalyzer.h"
 #include "MixLookAndFeel.h"
 #include "TransportButton.h"
 
@@ -16,47 +18,41 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void parentHierarchyChanged() override;
 
 private:
     void timerCallback() override;
-    void computeSpectrumFrame();
-    void paintSpectrum (juce::Graphics&, juce::Rectangle<float> area);
     void openFileChooser();
     void updateTransportUI();
+    void setTransportEnabled (bool enabled);
+    void showSpectrumSettings();
+    void showHistory (bool showHist);
 
     MixAnalyzerAudioProcessor& processorRef;
 
-    // Spectrum drawing state (runs on the GUI thread).
-    static constexpr int fftSize   = MixAnalyzerAudioProcessor::fftSize;
-    static constexpr int scopeSize = 512;
-
-    juce::dsp::FFT forwardFFT;
-    juce::dsp::WindowingFunction<float> window;
-
-    float fftInput[2 * fftSize] = {};   // scratch: raw samples in, magnitudes out
-    float scopeData[scopeSize]  = {};
-
-    // Frequency range currently drawn (set each frame, used for axis labels).
-    float specFMin = 20.0f;
-    float specFMax = 20000.0f;
-
-    // File playback controls (used mainly by the standalone).
+    // Controls.
     juce::TextButton loadButton { "Load song..." };
-    TransportButton restartButton  { "Restart",    TransportButton::Icon::restart };
+    TransportButton restartButton   { "Restart",    TransportButton::Icon::restart };
     TransportButton playPauseButton { "Play/Pause", TransportButton::Icon::play };
-    TransportButton stopButton     { "Stop",       TransportButton::Icon::stop };
-    juce::ToggleButton loopButton  { "Loop" };
+    TransportButton stopButton      { "Stop",       TransportButton::Icon::stop };
+    juce::ToggleButton loopButton   { "Loop" };
+    juce::TextButton settingsButton { "Settings" };
+    juce::TextButton spectrumExportButton { "Snapshot" };
+    juce::TextButton recordButton { "Record" };
+    juce::ComboBox   recordIntervalBox;
+    juce::TextButton liveTabButton    { "Live" };
+    juce::TextButton historyTabButton { "History" };
     juce::Label fileLabel;
     std::unique_ptr<juce::FileChooser> chooser;
 
-    void setTransportEnabled (bool enabled);
-
     WaveformDisplay waveform;
+    SpectrumDisplay spectrum;
+    HistoryAnalyzer history;
+    bool historyMode = false;
 
     MixLookAndFeel lookAndFeel;
     juce::TooltipWindow tooltipWindow { this };
 
-    juce::Rectangle<int> spectrumBounds;
     juce::Rectangle<int> waveCaptionBounds;
     juce::Rectangle<int> spectrumCaptionBounds;
 

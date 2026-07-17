@@ -9,6 +9,17 @@ MixLookAndFeel::MixLookAndFeel()
     setColour (juce::TextButton::textColourOnId,   juce::Colours::white);
     setColour (juce::Label::textColourId,          MixColours::text);
     setColour (juce::Label::backgroundColourId,    juce::Colours::transparentBlack);
+
+    setColour (juce::ComboBox::backgroundColourId, MixColours::surface2);
+    setColour (juce::ComboBox::textColourId,       MixColours::text);
+    setColour (juce::ComboBox::outlineColourId,    MixColours::border);
+    setColour (juce::ComboBox::arrowColourId,      MixColours::textDim);
+    setColour (juce::ComboBox::buttonColourId,     MixColours::surface2);
+
+    setColour (juce::PopupMenu::backgroundColourId,            MixColours::surface2);
+    setColour (juce::PopupMenu::textColourId,                  MixColours::text);
+    setColour (juce::PopupMenu::highlightedBackgroundColourId, MixColours::accent);
+    setColour (juce::PopupMenu::highlightedTextColourId,       juce::Colours::white);
 }
 
 juce::Font MixLookAndFeel::uiFont (float height, bool bold)
@@ -109,9 +120,10 @@ void MixLookAndFeel::drawTickBox (juce::Graphics& g, juce::Component&,
     }
     else
     {
-        g.setColour (over ? MixColours::surface2 : MixColours::surface);
+        // Lighter than the panel behind it, with a clearly visible outline.
+        g.setColour (MixColours::surface2);
         g.fillRoundedRectangle (box, radius);
-        g.setColour (MixColours::border);
-        g.drawRoundedRectangle (box, radius, 1.0f);
+        g.setColour (over ? MixColours::accentH : MixColours::textDim);
+        g.drawRoundedRectangle (box, radius, 1.4f);
     }
 }

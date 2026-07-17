@@ -1,14 +1,13 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
-#include <cmath>
+#include "SpectrumSettingsPanel.h"
 
 //==============================================================================
 MixAnalyzerAudioProcessorEditor::MixAnalyzerAudioProcessorEditor (MixAnalyzerAudioProcessor& p)
     : AudioProcessorEditor (&p),
       processorRef (p),
-      forwardFFT (MixAnalyzerAudioProcessor::fftOrder),
-      window (MixAnalyzerAudioProcessor::fftSize,
-              juce::dsp::WindowingFunction<float>::hann)
+      spectrum (p),
+      history (p)
 {
     setLookAndFeel (&lookAndFeel);
 
@@ -17,15 +16,19 @@ MixAnalyzerAudioProcessorEditor::MixAnalyzerAudioProcessorEditor (MixAnalyzerAud
     addAndMakeVisible (playPauseButton);
     addAndMakeVisible (stopButton);
     addAndMakeVisible (loopButton);
+    addAndMakeVisible (settingsButton);
+    addAndMakeVisible (liveTabButton);
+    addAndMakeVisible (historyTabButton);
     addAndMakeVisible (fileLabel);
     addAndMakeVisible (waveform);
+    addAndMakeVisible (spectrum);
+    addChildComponent (history);   // hidden until History tab is chosen
 
     fileLabel.setText ("No song loaded", juce::dontSendNotification);
     fileLabel.setFont (MixLookAndFeel::monoFont (12.5f));
     fileLabel.setColour (juce::Label::textColourId, MixColours::textDim);
     fileLabel.setJustificationType (juce::Justification::centredLeft);
 
-    // Load = ghost (outline) button.
     loadButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     loadButton.onClick = [this] { openFileChooser(); };
 
@@ -42,13 +45,102 @@ MixAnalyzerAudioProcessorEditor::MixAnalyzerAudioProcessorEditor (MixAnalyzerAud
     processorRef.setLoopEnabled (true);
     loopButton.onClick = [this] { processorRef.setLoopEnabled (loopButton.getToggleState()); };
 
+    settingsButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    settingsButton.onClick = [this] { showSpectrumSettings(); };
+
+    addAndMakeVisible (spectrumExportButton);
+    spectrumExportButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    spectrumExportButton.setTooltip ("Save the spectrum exactly as it looks right now - one single moment.");
+    spectrumExportButton.onClick = [this]
+    {
+        chooser = std::make_unique<juce::FileChooser> ("Export live spectrum", juce::File{}, "*.txt");
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                              [this] (const juce::FileChooser& fc)
+        {
+            const auto f = fc.getResult();
+            if (f != juce::File{})
+                f.replaceWithText (spectrum.getExportText());
+        });
+    };
+
+    // Record interval dropdown (how often Record captures).
+    addAndMakeVisible (recordIntervalBox);
+    recordIntervalBox.addItem ("Every 1s",  1);
+    recordIntervalBox.addItem ("Every 2s",  2);
+    recordIntervalBox.addItem ("Every 5s",  3);
+    recordIntervalBox.addItem ("Every 10s", 4);
+    recordIntervalBox.addItem ("Every 30s", 5);
+    recordIntervalBox.setSelectedId (1, juce::dontSendNotification);
+    recordIntervalBox.setTooltip ("How often Record saves a snapshot while it runs.");
+    recordIntervalBox.onChange = [this]
+    {
+        const int secs[] = { 1, 2, 5, 10, 30 };
+        spectrum.setRecordIntervalSeconds (secs[juce::jlimit (0, 4, recordIntervalBox.getSelectedId() - 1)]);
+    };
+
+    addAndMakeVisible (recordButton);
+    recordButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    recordButton.setTooltip ("Record the spectrum over TIME - it keeps saving snapshots at the chosen interval until you stop, then writes them all to one file.");
+    recordButton.onClick = [this]
+    {
+        if (spectrum.isRecording())
+        {
+            spectrum.stopRecording();
+            recordButton.setButtonText ("Record");
+            recordButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+            recordIntervalBox.setEnabled (true);
+
+            // Save the recorded time-series as CSV.
+            chooser = std::make_unique<juce::FileChooser> ("Save recorded spectrum", juce::File{}, "*.csv");
+            chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                                  [this] (const juce::FileChooser& fc)
+            {
+                const auto f = fc.getResult();
+                if (f != juce::File{})
+                    f.replaceWithText (spectrum.getRecordingText());
+            });
+        }
+        else
+        {
+            spectrum.startRecording();
+            recordButton.setButtonText ("Stop & save");
+            recordButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffef4444));
+            recordIntervalBox.setEnabled (false);
+        }
+    };
+
+    liveTabButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    historyTabButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    liveTabButton.onClick    = [this] { showHistory (false); };
+    historyTabButton.onClick = [this] { showHistory (true);  };
+
     setTransportEnabled (false);
+    showHistory (false);
 
     waveform.onSelectionChanged = [this] (double s, double e) { processorRef.setSelection (s, e); };
     waveform.onSelectionCleared = [this] { processorRef.clearSelection(); };
 
-    setSize (820, 560);
+    // Resizable so the standalone window gets a maximize button and can be
+    // dragged bigger; the layout stretches to fill.
+    setResizable (true, false);
+    setResizeLimits (700, 520, 4000, 3000);
+    setSize (820, 580);
     startTimerHz (60);
+}
+
+MixAnalyzerAudioProcessorEditor::~MixAnalyzerAudioProcessorEditor()
+{
+    stopTimer();
+    setLookAndFeel (nullptr);
+}
+
+void MixAnalyzerAudioProcessorEditor::parentHierarchyChanged()
+{
+    // The standalone window ships with only minimise + close. Once we're inside
+    // it, re-enable all three buttons so it gets a maximize button. In a plugin
+    // the top-level isn't a DocumentWindow, so this safely does nothing.
+    if (auto* dw = dynamic_cast<juce::DocumentWindow*> (getTopLevelComponent()))
+        dw->setTitleBarButtonsRequired (juce::DocumentWindow::allButtons, false);
 }
 
 void MixAnalyzerAudioProcessorEditor::setTransportEnabled (bool enabled)
@@ -58,21 +150,12 @@ void MixAnalyzerAudioProcessorEditor::setTransportEnabled (bool enabled)
     stopButton.setEnabled (enabled);
 }
 
-MixAnalyzerAudioProcessorEditor::~MixAnalyzerAudioProcessorEditor()
-{
-    stopTimer();
-    setLookAndFeel (nullptr);
-}
-
 //==============================================================================
 void MixAnalyzerAudioProcessorEditor::timerCallback()
 {
     // The audio thread asks us to stop when a non-looping section reaches its end.
     if (processorRef.consumeStopRequest())
         processorRef.stopAndReset();
-
-    computeSpectrumFrame();
-    repaint (spectrumBounds);
 
     // Move the playhead on the waveform.
     const double len = processorRef.getLengthSeconds();
@@ -84,47 +167,38 @@ void MixAnalyzerAudioProcessorEditor::timerCallback()
     updateTransportUI();
 }
 
-void MixAnalyzerAudioProcessorEditor::computeSpectrumFrame()
-{
-    // Grab the newest fftSize samples and zero the FFT scratch's upper half.
-    processorRef.copyLatestSamples (fftInput);
-    juce::FloatVectorOperations::clear (fftInput + fftSize, fftSize);
-
-    window.multiplyWithWindowingTable (fftInput, (size_t) fftSize);
-    forwardFFT.performFrequencyOnlyForwardTransform (fftInput);
-
-    const double sr = processorRef.getSampleRate() > 0.0 ? processorRef.getSampleRate() : 44100.0;
-    specFMin = 20.0f;
-    specFMax = juce::jmin (20000.0f, (float) (sr * 0.5));
-
-    const float logRange = std::log (specFMax / specFMin);
-    const float binHz    = (float) (sr / (double) fftSize);
-
-    constexpr float mindB = -100.0f;
-    constexpr float maxdB = 0.0f;
-
-    for (int i = 0; i < scopeSize; ++i)
-    {
-        // True log-frequency x axis (matches Audacity's "Log frequency").
-        const float frac = (float) i / (float) (scopeSize - 1);
-        const float freq = specFMin * std::exp (logRange * frac);
-        const int   bin  = juce::jlimit (0, fftSize / 2, (int) std::round (freq / binHz));
-
-        const float db = juce::Decibels::gainToDecibels (fftInput[bin])
-                             - juce::Decibels::gainToDecibels ((float) fftSize);
-
-        const float level = juce::jmap (juce::jlimit (mindB, maxdB, db), mindB, maxdB, 0.0f, 1.0f);
-
-        // Fast attack, slow release so it glides instead of stuttering.
-        const float prev = scopeData[i];
-        scopeData[i] = level > prev ? level : prev * 0.82f + level * 0.18f;
-    }
-}
-
 void MixAnalyzerAudioProcessorEditor::updateTransportUI()
 {
     playPauseButton.setIcon (processorRef.isFilePlaying() ? TransportButton::Icon::pause
                                                           : TransportButton::Icon::play);
+}
+
+void MixAnalyzerAudioProcessorEditor::showSpectrumSettings()
+{
+    auto panel = std::make_unique<SpectrumSettingsPanel> (spectrum);
+    panel->setLookAndFeel (&lookAndFeel);
+    juce::CallOutBox::launchAsynchronously (std::move (panel),
+                                            settingsButton.getScreenBounds(),
+                                            nullptr);
+}
+
+void MixAnalyzerAudioProcessorEditor::showHistory (bool showHist)
+{
+    historyMode = showHist;
+    spectrum.setVisible (! showHist);
+    settingsButton.setVisible (! showHist);
+    spectrumExportButton.setVisible (! showHist);
+    recordButton.setVisible (! showHist);
+    recordIntervalBox.setVisible (! showHist);
+    history.setVisible (showHist);
+
+    // The active tab is a filled indigo button; the inactive one is a ghost.
+    liveTabButton.setColour    (juce::TextButton::buttonColourId,
+                                showHist ? juce::Colours::transparentBlack : MixColours::accent);
+    historyTabButton.setColour (juce::TextButton::buttonColourId,
+                                showHist ? MixColours::accent : juce::Colours::transparentBlack);
+    liveTabButton.repaint();
+    historyTabButton.repaint();
 }
 
 //==============================================================================
@@ -170,17 +244,17 @@ void MixAnalyzerAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.fillAll (MixColours::bg);
 
-    // Header strip: app name in indigo with a soft glow.
+    // Header: app name in indigo with a soft glow.
     auto header = getLocalBounds().removeFromTop (48).reduced (16, 0);
 
     g.setColour (MixColours::accent.withAlpha (0.35f));
     g.setFont (MixLookAndFeel::uiFont (19.0f, true));
     for (auto d : { juce::Point<int> (0, 1), juce::Point<int> (1, 0) })
-        g.drawText ("EERIE - Mix Analyzer", header.translated (d.x, d.y),
+        g.drawText ("EERIE | Mix Analyzer", header.translated (d.x, d.y),
                     juce::Justification::centredLeft);
 
     g.setColour (MixColours::accentH);
-    g.drawText ("EERIE - Mix Analyzer", header, juce::Justification::centredLeft);
+    g.drawText ("EERIE | Mix Analyzer", header, juce::Justification::centredLeft);
 
     // Section captions (uppercase, dimmed).
     auto drawCaption = [&g] (juce::Rectangle<int> area, const juce::String& t)
@@ -193,93 +267,6 @@ void MixAnalyzerAudioProcessorEditor::paint (juce::Graphics& g)
 
     drawCaption (waveCaptionBounds, "Waveform  -  drag to select a section");
     drawCaption (spectrumCaptionBounds, "Spectrum");
-
-    if (! spectrumBounds.isEmpty())
-        paintSpectrum (g, spectrumBounds.toFloat());
-}
-
-void MixAnalyzerAudioProcessorEditor::paintSpectrum (juce::Graphics& g, juce::Rectangle<float> area)
-{
-    g.setColour (MixColours::surface);
-    g.fillRoundedRectangle (area, 8.0f);
-    g.setColour (MixColours::border);
-    g.drawRoundedRectangle (area, 8.0f, 1.0f);
-
-    // Reserve gutters for the axis labels; the curve lives in "plot".
-    const float leftGutter   = 34.0f;   // dB numbers
-    const float bottomGutter = 16.0f;   // frequency numbers
-    juce::Rectangle<float> plot (area.getX() + leftGutter, area.getY() + 6.0f,
-                                 area.getWidth() - leftGutter - 8.0f,
-                                 area.getHeight() - bottomGutter - 8.0f);
-
-    g.setFont (MixLookAndFeel::monoFont (9.5f));
-
-    // dB grid + labels (0 to -100).
-    for (int db = 0; db >= -100; db -= 20)
-    {
-        const float y = juce::jmap ((float) db, 0.0f, -100.0f, plot.getY(), plot.getBottom());
-        g.setColour (MixColours::border.withAlpha (0.6f));
-        g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
-        g.setColour (MixColours::textDim);
-        g.drawText (juce::String (db),
-                    juce::Rectangle<float> (area.getX() + 2.0f, y - 6.0f, leftGutter - 7.0f, 12.0f),
-                    juce::Justification::centredRight);
-    }
-
-    // Frequency grid + labels (log spaced).
-    const float logRange = std::log (specFMax / specFMin);
-    const int   freqs[]  = { 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000 };
-
-    for (int f : freqs)
-    {
-        if ((float) f < specFMin || (float) f > specFMax)
-            continue;
-
-        const float frac = std::log ((float) f / specFMin) / logRange;
-        const float x = plot.getX() + frac * plot.getWidth();
-
-        g.setColour (MixColours::border.withAlpha (0.5f));
-        g.drawVerticalLine ((int) x, plot.getY(), plot.getBottom());
-        g.setColour (MixColours::textDim);
-        const juce::String lbl = f >= 1000 ? juce::String (f / 1000) + "k" : juce::String (f);
-        g.drawText (lbl,
-                    juce::Rectangle<float> (x - 16.0f, plot.getBottom() + 2.0f, 32.0f, 12.0f),
-                    juce::Justification::centred);
-    }
-
-    // Filled spectrum curve.
-    juce::Path curve;
-    curve.startNewSubPath (plot.getX(), plot.getBottom());
-
-    for (int i = 0; i < scopeSize; ++i)
-    {
-        const float x = juce::jmap ((float) i, 0.0f, (float) (scopeSize - 1),
-                                    plot.getX(), plot.getRight());
-        const float y = juce::jmap (scopeData[i], 0.0f, 1.0f, plot.getBottom(), plot.getY());
-        curve.lineTo (x, y);
-    }
-
-    curve.lineTo (plot.getRight(), plot.getBottom());
-    curve.closeSubPath();
-
-    juce::ColourGradient grad (MixColours::accent.withAlpha (0.85f), plot.getX(), plot.getY(),
-                               MixColours::accent.withAlpha (0.12f), plot.getX(), plot.getBottom(),
-                               false);
-    g.setGradientFill (grad);
-    g.fillPath (curve);
-
-    // Bright top line.
-    juce::Path line;
-    for (int i = 0; i < scopeSize; ++i)
-    {
-        const float x = juce::jmap ((float) i, 0.0f, (float) (scopeSize - 1),
-                                    plot.getX(), plot.getRight());
-        const float y = juce::jmap (scopeData[i], 0.0f, 1.0f, plot.getBottom(), plot.getY());
-        if (i == 0) line.startNewSubPath (x, y);
-        else        line.lineTo (x, y);
-    }
-    g.setColour (MixColours::accentH);
-    g.strokePath (line, juce::PathStrokeType (1.5f));
 }
 
 //==============================================================================
@@ -287,7 +274,7 @@ void MixAnalyzerAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
 
-    bounds.removeFromTop (48);   // header (painted, no child components)
+    bounds.removeFromTop (48);   // header (painted)
 
     // Control strip: Load, transport icons, Loop, and the file name label.
     auto controls = bounds.removeFromTop (40).reduced (16, 5);
@@ -307,7 +294,21 @@ void MixAnalyzerAudioProcessorEditor::resized()
     waveCaptionBounds = bounds.removeFromTop (20).reduced (16, 0);
     waveform.setBounds (bounds.removeFromTop (110).reduced (16, 2));
 
-    // Spectrum: caption strip, then the rest.
-    spectrumCaptionBounds = bounds.removeFromTop (20).reduced (16, 0);
-    spectrumBounds = bounds.reduced (16, 2).withTrimmedBottom (12);
+    // Tab strip: Live / History on the left, Settings (live only) on the right.
+    auto tabRow = bounds.removeFromTop (28).reduced (16, 0);
+    liveTabButton.setBounds    (tabRow.removeFromLeft (56).withSizeKeepingCentre (56, 22));
+    tabRow.removeFromLeft (4);
+    historyTabButton.setBounds (tabRow.removeFromLeft (70).withSizeKeepingCentre (70, 22));
+    settingsButton.setBounds       (tabRow.removeFromRight (88).withSizeKeepingCentre (88, 22));
+    tabRow.removeFromRight (6);
+    spectrumExportButton.setBounds (tabRow.removeFromRight (78).withSizeKeepingCentre (78, 22));
+    tabRow.removeFromRight (6);
+    recordButton.setBounds         (tabRow.removeFromRight (88).withSizeKeepingCentre (88, 22));
+    tabRow.removeFromRight (4);
+    recordIntervalBox.setBounds    (tabRow.removeFromRight (88).withSizeKeepingCentre (88, 22));
+    spectrumCaptionBounds = {};   // tabs replace the caption
+
+    auto viewArea = bounds.reduced (16, 2).withTrimmedBottom (12);
+    spectrum.setBounds (viewArea);
+    history.setBounds (viewArea);
 }

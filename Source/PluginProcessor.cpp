@@ -125,6 +125,7 @@ void MixAnalyzerAudioProcessor::loadFile (const juce::File& file)
                                fileSampleRate, 2);
 
     loadedFileName = file.getFileName();
+    loadedFile     = file;
     selectionStart.store (0.0);
     selectionEnd.store (0.0);
     fileIsLoaded.store (true);

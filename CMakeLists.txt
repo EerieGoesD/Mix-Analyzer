@@ -35,6 +35,9 @@ target_sources(MixAnalyzer PRIVATE
     Source/PluginEditor.cpp
     Source/WaveformDisplay.cpp
     Source/MixLookAndFeel.cpp
+    Source/SpectrumDisplay.cpp
+    Source/SpectrumSettingsPanel.cpp
+    Source/HistoryAnalyzer.cpp
 )
 
 target_compile_definitions(MixAnalyzer PUBLIC
