@@ -91,12 +91,14 @@ void MixLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button
                 juce::Justification::centred, true);
 }
 
-juce::Font MixLookAndFeel::getTextButtonFont (juce::TextButton&, int /*buttonHeight*/)
+juce::Font MixLookAndFeel::getTextButtonFont (juce::TextButton& button, int /*buttonHeight*/)
 {
+    if (button.getProperties().contains ("recordBtn"))
+        return uiFont (15.0f, true);   // record button gets a larger, bolder label
     return uiFont (13.5f, false);
 }
 
-void MixLookAndFeel::drawTickBox (juce::Graphics& g, juce::Component&,
+void MixLookAndFeel::drawTickBox (juce::Graphics& g, juce::Component& component,
                                   float x, float y, float w, float h,
                                   bool ticked, bool isEnabled,
                                   bool over, bool /*down*/)
@@ -104,6 +106,24 @@ void MixLookAndFeel::drawTickBox (juce::Graphics& g, juce::Component&,
     juce::Rectangle<float> box (x, y, w, h);
     box = box.reduced (1.0f);
     const float radius = 4.0f;
+
+    // A button in a radio group draws as a round radio button, not a tick box.
+    if (auto* b = dynamic_cast<juce::Button*> (&component); b != nullptr && b->getRadioGroupId() != 0)
+    {
+        auto circle = box.withSizeKeepingCentre (juce::jmin (box.getWidth(), box.getHeight()),
+                                                 juce::jmin (box.getWidth(), box.getHeight()));
+        g.setColour (MixColours::surface2);
+        g.fillEllipse (circle);
+        g.setColour (ticked ? MixColours::accentH : (over ? MixColours::accentH : MixColours::textDim));
+        g.drawEllipse (circle, 1.4f);
+
+        if (ticked)
+        {
+            g.setColour (isEnabled ? MixColours::accent : MixColours::accent.withAlpha (0.4f));
+            g.fillEllipse (circle.reduced (circle.getWidth() * 0.28f));
+        }
+        return;
+    }
 
     if (ticked)
     {

@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "ebur128.h"
 #include <utility>
+#include <cmath>
 
 //==============================================================================
 MixAnalyzerAudioProcessor::MixAnalyzerAudioProcessor()
@@ -16,17 +18,39 @@ MixAnalyzerAudioProcessor::~MixAnalyzerAudioProcessor()
 {
     transportSource.setSource (nullptr);
     readAheadThread.stopThread (1000);
+
+    if (loudnessState != nullptr)
+    {
+        auto* st = static_cast<ebur128_state*> (loudnessState);
+        ebur128_destroy (&st);
+        loudnessState = nullptr;
+    }
 }
 
 //==============================================================================
 void MixAnalyzerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     transportSource.prepareToPlay (samplesPerBlock, sampleRate);
+
+    currentSampleRate = sampleRate;
+    loudnessChannels  = juce::jmax (1, getTotalNumOutputChannels());
+    interleaveBuf.assign ((size_t) samplesPerBlock * (size_t) loudnessChannels, 0.0f);
+    resetLoudness();
 }
 
 void MixAnalyzerAudioProcessor::releaseResources()
 {
     transportSource.releaseResources();
+
+    // Free the EBU R128 state (several MB) while the host has stopped audio; the
+    // next prepareToPlay recreates it. resetLoudness recreates it too.
+    const juce::SpinLock::ScopedLockType sl (loudnessLock);
+    if (loudnessState != nullptr)
+    {
+        auto* st = static_cast<ebur128_state*> (loudnessState);
+        ebur128_destroy (&st);
+        loudnessState = nullptr;
+    }
 }
 
 bool MixAnalyzerAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -82,15 +106,107 @@ void MixAnalyzerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         const float* right = numChannels > 1 ? buffer.getReadPointer (1) : left;
 
         for (int i = 0; i < numSamples; ++i)
-            pushSample (0.5f * (left[i] + right[i]));
+        {
+            pushSample (0.5f * (left[i] + right[i]), 0.5f * (left[i] - right[i]));
+            pushStereo (left[i], right[i]);
+        }
+    }
+
+    // Feed the loudness meter. A loaded song is measured only while it plays (so
+    // pausing holds the reading); with no file we measure the host audio.
+    const bool measureLoudness = fileIsLoaded.load() ? transportSource.isPlaying() : true;
+
+    if (measureLoudness && numChannels > 0)
+    {
+        const juce::SpinLock::ScopedTryLockType sl (loudnessLock);
+
+        // Interleave exactly loudnessChannels channels (the count ebur128 was
+        // initialised with), padding with silence if the buffer has fewer, so the
+        // stride always matches what add_frames reads - no matter the bus layout.
+        if (sl.isLocked() && loudnessState != nullptr
+            && (int) interleaveBuf.size() >= numSamples * loudnessChannels)
+        {
+            auto* st = static_cast<ebur128_state*> (loudnessState);
+            float* interleaved = interleaveBuf.data();
+
+            for (int i = 0; i < numSamples; ++i)
+                for (int c = 0; c < loudnessChannels; ++c)
+                    interleaved[i * loudnessChannels + c]
+                        = (c < numChannels) ? buffer.getReadPointer (c)[i] : 0.0f;
+
+            ebur128_add_frames_float (st, interleaved, (size_t) numSamples);
+        }
     }
 }
 
 //==============================================================================
-void MixAnalyzerAudioProcessor::pushSample (float sample) noexcept
+void MixAnalyzerAudioProcessor::updateLoudnessReadings()
+{
+    // Runs on the GUI thread. The queries re-sum the loudness windows, so keeping
+    // them off the audio thread avoids block-deadline overruns at high sample
+    // rates. A try-lock means we never block the audio thread; if it is busy
+    // feeding a block we just keep last frame's values and refresh next tick.
+    const juce::SpinLock::ScopedTryLockType sl (loudnessLock);
+    if (! sl.isLocked() || loudnessState == nullptr)
+        return;
+
+    auto* st = static_cast<ebur128_state*> (loudnessState);
+    double v = 0.0;
+
+    if (ebur128_loudness_momentary (st, &v) == EBUR128_SUCCESS)
+        momentaryLufs.store (std::isfinite (v) ? (float) v : -300.0f);
+    if (ebur128_loudness_shortterm (st, &v) == EBUR128_SUCCESS)
+        shortTermLufs.store (std::isfinite (v) ? (float) v : -300.0f);
+    if (ebur128_loudness_global (st, &v) == EBUR128_SUCCESS)
+        integratedLufs.store (std::isfinite (v) ? (float) v : -300.0f);
+    if (ebur128_loudness_range (st, &v) == EBUR128_SUCCESS)
+        loudnessRangeLU.store (std::isfinite (v) ? (float) v : 0.0f);
+
+    double peak = 0.0;
+    for (int c = 0; c < loudnessChannels; ++c)
+    {
+        double p = 0.0;
+        if (ebur128_true_peak (st, (unsigned) c, &p) == EBUR128_SUCCESS)
+            peak = juce::jmax (peak, p);
+    }
+    truePeakDb.store (peak > 0.0 ? (float) (20.0 * std::log10 (peak)) : -300.0f);
+}
+
+//==============================================================================
+void MixAnalyzerAudioProcessor::resetLoudness()
+{
+    const juce::SpinLock::ScopedLockType sl (loudnessLock);
+
+    if (loudnessState != nullptr)
+    {
+        auto* old = static_cast<ebur128_state*> (loudnessState);
+        ebur128_destroy (&old);
+        loudnessState = nullptr;
+    }
+
+    if (currentSampleRate > 0.0)
+    {
+        const int mode = EBUR128_MODE_M | EBUR128_MODE_S | EBUR128_MODE_I
+                       | EBUR128_MODE_LRA | EBUR128_MODE_TRUE_PEAK
+                       | EBUR128_MODE_HISTOGRAM;
+
+        loudnessState = ebur128_init ((unsigned) loudnessChannels,
+                                      (unsigned long) currentSampleRate, mode);
+    }
+
+    momentaryLufs.store   (-300.0f);
+    shortTermLufs.store   (-300.0f);
+    integratedLufs.store  (-300.0f);
+    loudnessRangeLU.store (0.0f);
+    truePeakDb.store      (-300.0f);
+}
+
+//==============================================================================
+void MixAnalyzerAudioProcessor::pushSample (float mid, float side) noexcept
 {
     const int w = writePos.load (std::memory_order_relaxed);
-    ringBuffer[w] = sample;
+    ringBuffer[w] = mid;
+    sideBuffer[w] = side;
     writePos.store ((w + 1) & (fftSize - 1), std::memory_order_release);
 }
 
@@ -102,6 +218,36 @@ void MixAnalyzerAudioProcessor::copyLatestSamples (float* dest) const noexcept
 
     for (int i = 0; i < fftSize; ++i)
         dest[i] = ringBuffer[(w + i) & (fftSize - 1)];
+}
+
+void MixAnalyzerAudioProcessor::copyLatestSide (float* dest) const noexcept
+{
+    const int w = writePos.load (std::memory_order_acquire);
+
+    for (int i = 0; i < fftSize; ++i)
+        dest[i] = sideBuffer[(w + i) & (fftSize - 1)];
+}
+
+void MixAnalyzerAudioProcessor::pushStereo (float l, float r) noexcept
+{
+    const int w = sfWritePos.load (std::memory_order_relaxed);
+    sfLeft[w]  = l;
+    sfRight[w] = r;
+    sfWritePos.store ((w + 1) & (sfSize - 1), std::memory_order_release);
+}
+
+void MixAnalyzerAudioProcessor::copyLatestStereo (float* destL, float* destR, int numSamples) const noexcept
+{
+    numSamples = juce::jmin (numSamples, sfSize);
+    const int w = sfWritePos.load (std::memory_order_acquire);
+    const int start = (w - numSamples) & (sfSize - 1);
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const int idx = (start + i) & (sfSize - 1);
+        destL[i] = sfLeft[idx];
+        destR[i] = sfRight[idx];
+    }
 }
 
 //==============================================================================
@@ -129,6 +275,7 @@ void MixAnalyzerAudioProcessor::loadFile (const juce::File& file)
     selectionStart.store (0.0);
     selectionEnd.store (0.0);
     fileIsLoaded.store (true);
+    resetLoudness();   // fresh loudness measurement for the new song
 }
 
 double MixAnalyzerAudioProcessor::sectionStartOrZero() const noexcept
@@ -172,6 +319,7 @@ void MixAnalyzerAudioProcessor::restart()
         return;
 
     transportSource.setPosition (sectionStartOrZero());
+    resetLoudness();   // replaying from the start: measure loudness fresh
     transportSource.start();
 }
 
@@ -183,6 +331,7 @@ void MixAnalyzerAudioProcessor::stopAndReset()
     transportSource.stop();
     transportSource.setPosition (sectionStartOrZero());
     clearAnalysis();   // flatten the spectrum immediately instead of decaying
+    resetLoudness();   // clear the loudness readings too
 }
 
 void MixAnalyzerAudioProcessor::setLoopEnabled (bool shouldLoop)
@@ -196,6 +345,7 @@ void MixAnalyzerAudioProcessor::setLoopEnabled (bool shouldLoop)
 void MixAnalyzerAudioProcessor::clearAnalysis() noexcept
 {
     juce::FloatVectorOperations::clear (ringBuffer, fftSize);
+    juce::FloatVectorOperations::clear (sideBuffer, fftSize);
 }
 
 bool MixAnalyzerAudioProcessor::isFilePlaying() const

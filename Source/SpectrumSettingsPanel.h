@@ -1,7 +1,9 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <memory>
 #include "SpectrumDisplay.h"
+#include "PresetBar.h"
 
 //==============================================================================
 // Popover of LIVE SPECTRUM settings (iZotope Insight set), shown from the gear.
@@ -15,11 +17,15 @@ public:
     void paint (juce::Graphics&) override;
 
 private:
+    void refreshFromSpectrum();   // pull every control back from the meter's state
+
     SpectrumDisplay& spectrum;
 
-    juce::Label     specTypeCaption, windowSizeCaption, windowTypeCaption,
+    std::unique_ptr<PresetBar> presetBar;
+
+    juce::Label     channelCaption, specTypeCaption, windowSizeCaption, windowTypeCaption,
                     averageCaption, overlapCaption, peakHoldCaption;
-    juce::ComboBox  specTypeBox, windowSizeBox, windowTypeBox,
+    juce::ComboBox  channelBox, specTypeBox, windowSizeBox, windowTypeBox,
                     averageBox, overlapBox, peakHoldBox;
     juce::ToggleButton peakHoldToggle { "Show peak hold" };
     juce::TextButton   freezeButton   { "Freeze reference" };

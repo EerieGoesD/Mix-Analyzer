@@ -20,12 +20,18 @@ public:
     // Spectrum Type (Insight).
     enum class SpecType { linear, thirdOctave, critical, fullOctave };
 
+    // Which signal is analysed: the mono sum (mid) or the side (stereo width).
+    enum class Channel { mono, side };
+
     explicit SpectrumDisplay (MixAnalyzerAudioProcessor&);
     ~SpectrumDisplay() override;
 
     //== Settings ==============================================================
     void setSpectrumType (SpecType);
     SpecType getSpectrumType() const noexcept { return specType; }
+
+    void setChannel (Channel c);
+    Channel getChannel() const noexcept { return channel; }
 
     void setWindowOrder (int order);                 // 9..13 -> 512..8192
     int  getWindowOrder() const noexcept { return windowOrder; }
@@ -49,6 +55,10 @@ public:
     void clearReference();
     bool hasReferenceCurve() const noexcept { return hasReference; }
 
+    // Serialise / restore every setting above (for user presets).
+    juce::String getSettingsString() const;
+    void applySettingsString (const juce::String&);
+
     // The current live spectrum as "frequency<TAB>dB" lines, for a snapshot export.
     juce::String getExportText() const;
 
@@ -61,6 +71,10 @@ public:
     int  getRecordedCount() const noexcept { return (int) recordFrames.size(); }
     juce::String getRecordingText() const;
 
+    // Clear the accumulated average / peak hold (e.g. on stop / new song), so an
+    // Infinite-averaging spectrum starts fresh instead of holding the old curve.
+    void resetAveraging();
+
     //== Component =============================================================
     void paint (juce::Graphics&) override;
     void mouseMove (const juce::MouseEvent&) override;
@@ -72,7 +86,6 @@ private:
     void fillWindowTable();
     void rebuildSlots (double sampleRate);           // slot = bin (linear) or band (octave)
     void computeFrame();
-    void resetAveraging();
 
     juce::Rectangle<float> plotBounds() const;
     float freqToX (float freq, juce::Rectangle<float> plot) const;
@@ -90,6 +103,7 @@ private:
     int fftSize     = 1 << 13;
     WinType  windowType = WinType::hann;
     SpecType specType   = SpecType::thirdOctave;   // clean bands by default
+    Channel  channel    = Channel::mono;           // mono sum by default
     float overlapPercent = 50.0f;
 
     std::unique_ptr<juce::dsp::FFT> fft;

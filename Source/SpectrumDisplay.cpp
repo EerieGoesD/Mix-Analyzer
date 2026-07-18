@@ -121,6 +121,11 @@ void SpectrumDisplay::setSpectrumType (SpecType t)
     if (t != specType) { specType = t; lastFftSize = 0; }   // force slot rebuild
 }
 
+void SpectrumDisplay::setChannel (Channel c)
+{
+    if (c != channel) { channel = c; resetAveraging(); }    // fresh curve for the new signal
+}
+
 void SpectrumDisplay::setWindowOrder (int order)
 {
     order = juce::jlimit (9, 15, order);   // 512 .. 32768
@@ -159,6 +164,51 @@ void SpectrumDisplay::setPeakHoldShown (bool shouldShow)
 
 void SpectrumDisplay::setPeakHoldMs (float ms)          { peakHoldMs = ms; }
 void SpectrumDisplay::setOverlapPercent (float percent) { overlapPercent = percent; }
+
+juce::String SpectrumDisplay::getSettingsString() const
+{
+    juce::DynamicObject::Ptr o = new juce::DynamicObject();
+    o->setProperty ("specType",    (int) specType);
+    o->setProperty ("channel",     (int) channel);
+    o->setProperty ("windowOrder", windowOrder);
+    o->setProperty ("windowType",  (int) windowType);
+    o->setProperty ("average",     averageSeconds);
+    o->setProperty ("overlap",     overlapPercent);
+    o->setProperty ("peakHoldMs",  peakHoldMs);
+    o->setProperty ("peakShown",   showPeakHold);
+    return juce::JSON::toString (juce::var (o.get()));
+}
+
+void SpectrumDisplay::applySettingsString (const juce::String& s)
+{
+    const auto v = juce::JSON::parse (s);
+    auto* o = v.getDynamicObject();
+    if (o == nullptr)
+        return;
+
+    // Guard the enum casts against out-of-range ints from a hand-edited/older
+    // preset. setWindowOrder already clamps to 9..15.
+    if (o->hasProperty ("specType"))
+    {
+        const int t = (int) o->getProperty ("specType");
+        if (t >= 0 && t <= 3) setSpectrumType ((SpecType) t);
+    }
+    if (o->hasProperty ("channel"))
+    {
+        const int c = (int) o->getProperty ("channel");
+        if (c >= 0 && c <= 1) setChannel ((Channel) c);
+    }
+    if (o->hasProperty ("windowOrder")) setWindowOrder ((int) o->getProperty ("windowOrder"));
+    if (o->hasProperty ("windowType"))
+    {
+        const int t = (int) o->getProperty ("windowType");
+        if (t >= 0 && t <= 4) setWindowType ((WinType) t);
+    }
+    if (o->hasProperty ("average"))     setAverageSeconds ((float) (double) o->getProperty ("average"));
+    if (o->hasProperty ("overlap"))     setOverlapPercent ((float) (double) o->getProperty ("overlap"));
+    if (o->hasProperty ("peakHoldMs"))  setPeakHoldMs     ((float) (double) o->getProperty ("peakHoldMs"));
+    if (o->hasProperty ("peakShown"))   setPeakHoldShown  ((bool) o->getProperty ("peakShown"));
+}
 
 void SpectrumDisplay::freezeReference()
 {
@@ -250,7 +300,10 @@ juce::String SpectrumDisplay::getRecordingText() const
 
 void SpectrumDisplay::computeFrame()
 {
-    processorRef.copyLatestSamples (sampleBuf.data());
+    if (channel == Channel::side)
+        processorRef.copyLatestSide (sampleBuf.data());
+    else
+        processorRef.copyLatestSamples (sampleBuf.data());
 
     const double sr = processorRef.getSampleRate() > 0.0 ? processorRef.getSampleRate() : 44100.0;
 

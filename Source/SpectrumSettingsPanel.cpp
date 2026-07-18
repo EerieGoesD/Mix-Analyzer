@@ -13,6 +13,7 @@ SpectrumSettingsPanel::SpectrumSettingsPanel (SpectrumDisplay& s)
         addAndMakeVisible (l);
     };
 
+    setupCaption (channelCaption,    "Channel");
     setupCaption (specTypeCaption,   "Spectrum type");
     setupCaption (windowSizeCaption, "Window size");
     setupCaption (windowTypeCaption, "Window type");
@@ -20,23 +21,30 @@ SpectrumSettingsPanel::SpectrumSettingsPanel (SpectrumDisplay& s)
     setupCaption (overlapCaption,    "Overlap");
     setupCaption (peakHoldCaption,   "Peak hold time");
 
+    // Preset bar (save / pick / delete user presets).
+    presetBar = std::make_unique<PresetBar> (
+        juce::String ("spectrum"),
+        [this] { return spectrum.getSettingsString(); },
+        [this] (const juce::String& str) { spectrum.applySettingsString (str); });
+    presetBar->onPresetApplied = [this] { refreshFromSpectrum(); };
+    addAndMakeVisible (*presetBar);
+
+    //== Channel (mono sum, or side = stereo width) ============================
+    channelBox.addItem ("Mono", 1);
+    channelBox.addItem ("Side", 2);
+    channelBox.onChange = [this]
+    {
+        spectrum.setChannel (channelBox.getSelectedId() == 2
+                                 ? SpectrumDisplay::Channel::side
+                                 : SpectrumDisplay::Channel::mono);
+    };
+    addAndMakeVisible (channelBox);
+
     //== Spectrum type =========================================================
     specTypeBox.addItem ("Linear",       1);
     specTypeBox.addItem ("1/3 Octave",   2);
     specTypeBox.addItem ("Critical",     3);
     specTypeBox.addItem ("Full Octave",  4);
-    {
-        using ST = SpectrumDisplay::SpecType;
-        int id = 2;
-        switch (spectrum.getSpectrumType())
-        {
-            case ST::linear:      id = 1; break;
-            case ST::thirdOctave: id = 2; break;
-            case ST::critical:    id = 3; break;
-            case ST::fullOctave:  id = 4; break;
-        }
-        specTypeBox.setSelectedId (id, juce::dontSendNotification);
-    }
     specTypeBox.onChange = [this]
     {
         using ST = SpectrumDisplay::SpecType;
@@ -55,7 +63,6 @@ SpectrumSettingsPanel::SpectrumSettingsPanel (SpectrumDisplay& s)
                             "16384 (Slow)", "32768 (Slow)" };
     for (int i = 0; i < 7; ++i)
         windowSizeBox.addItem (sizes[i], i + 1);
-    windowSizeBox.setSelectedId (spectrum.getWindowOrder() - 8, juce::dontSendNotification);
     windowSizeBox.onChange = [this]
     {
         spectrum.setWindowOrder (windowSizeBox.getSelectedId() + 8);
@@ -68,19 +75,6 @@ SpectrumSettingsPanel::SpectrumSettingsPanel (SpectrumDisplay& s)
     windowTypeBox.addItem ("Blackman", 3);
     windowTypeBox.addItem ("Bartlett", 4);
     windowTypeBox.addItem ("Kaiser",   5);
-    {
-        using WT = SpectrumDisplay::WinType;
-        int id = 1;
-        switch (spectrum.getWindowType())
-        {
-            case WT::hann:     id = 1; break;
-            case WT::hamming:  id = 2; break;
-            case WT::blackman: id = 3; break;
-            case WT::bartlett: id = 4; break;
-            case WT::kaiser:   id = 5; break;
-        }
-        windowTypeBox.setSelectedId (id, juce::dontSendNotification);
-    }
     windowTypeBox.onChange = [this]
     {
         using WT = SpectrumDisplay::WinType;
@@ -102,16 +96,6 @@ SpectrumSettingsPanel::SpectrumSettingsPanel (SpectrumDisplay& s)
     averageBox.addItem ("5 sec",     4);
     averageBox.addItem ("10 sec",    5);
     averageBox.addItem ("Infinite",  6);
-    {
-        const float avg = spectrum.getAverageSeconds();
-        int id = 1;
-        if (avg < 0.0f)                                  id = 6;
-        else if (juce::approximatelyEqual (avg, 1.0f))   id = 2;
-        else if (juce::approximatelyEqual (avg, 3.0f))   id = 3;
-        else if (juce::approximatelyEqual (avg, 5.0f))   id = 4;
-        else if (juce::approximatelyEqual (avg, 10.0f))  id = 5;
-        averageBox.setSelectedId (id, juce::dontSendNotification);
-    }
     averageBox.onChange = [this]
     {
         switch (averageBox.getSelectedId())
@@ -131,14 +115,6 @@ SpectrumSettingsPanel::SpectrumSettingsPanel (SpectrumDisplay& s)
     overlapBox.addItem ("50%",   2);
     overlapBox.addItem ("75%",   3);
     overlapBox.addItem ("87.5%", 4);
-    {
-        const float ov = spectrum.getOverlapPercent();
-        int id = 2;
-        if      (juce::approximatelyEqual (ov, 0.0f))   id = 1;
-        else if (juce::approximatelyEqual (ov, 75.0f))  id = 3;
-        else if (juce::approximatelyEqual (ov, 87.5f))  id = 4;
-        overlapBox.setSelectedId (id, juce::dontSendNotification);
-    }
     overlapBox.onChange = [this]
     {
         switch (overlapBox.getSelectedId())
@@ -159,17 +135,6 @@ SpectrumSettingsPanel::SpectrumSettingsPanel (SpectrumDisplay& s)
     peakHoldBox.addItem ("5 sec",   5);
     peakHoldBox.addItem ("10 sec",  6);
     peakHoldBox.addItem ("Infinite",7);
-    {
-        const float ph = spectrum.getPeakHoldMs();
-        int id = 4;
-        if (ph < 0.0f)                                     id = 7;
-        else if (juce::approximatelyEqual (ph, 5.0f))      id = 1;
-        else if (juce::approximatelyEqual (ph, 250.0f))    id = 2;
-        else if (juce::approximatelyEqual (ph, 500.0f))    id = 3;
-        else if (juce::approximatelyEqual (ph, 5000.0f))   id = 5;
-        else if (juce::approximatelyEqual (ph, 10000.0f))  id = 6;
-        peakHoldBox.setSelectedId (id, juce::dontSendNotification);
-    }
     peakHoldBox.onChange = [this]
     {
         switch (peakHoldBox.getSelectedId())
@@ -183,12 +148,10 @@ SpectrumSettingsPanel::SpectrumSettingsPanel (SpectrumDisplay& s)
             default: spectrum.setPeakHoldMs (1000.0f);  break;
         }
     };
-    peakHoldBox.setEnabled (spectrum.isPeakHoldShown());
     addAndMakeVisible (peakHoldBox);
 
     //== Show peak hold + freeze ==============================================
     peakHoldToggle.setColour (juce::ToggleButton::textColourId, MixColours::text);
-    peakHoldToggle.setToggleState (spectrum.isPeakHoldShown(), juce::dontSendNotification);
     peakHoldToggle.onClick = [this]
     {
         spectrum.setPeakHoldShown (peakHoldToggle.getToggleState());
@@ -196,7 +159,6 @@ SpectrumSettingsPanel::SpectrumSettingsPanel (SpectrumDisplay& s)
     };
     addAndMakeVisible (peakHoldToggle);
 
-    freezeButton.setButtonText (spectrum.hasReferenceCurve() ? "Clear reference" : "Freeze reference");
     freezeButton.onClick = [this]
     {
         if (spectrum.hasReferenceCurve())
@@ -212,7 +174,80 @@ SpectrumSettingsPanel::SpectrumSettingsPanel (SpectrumDisplay& s)
     };
     addAndMakeVisible (freezeButton);
 
-    setSize (262, 322);
+    refreshFromSpectrum();
+    setSize (280, 413);
+}
+
+//==============================================================================
+void SpectrumSettingsPanel::refreshFromSpectrum()
+{
+    channelBox.setSelectedId (spectrum.getChannel() == SpectrumDisplay::Channel::side ? 2 : 1,
+                              juce::dontSendNotification);
+
+    using ST = SpectrumDisplay::SpecType;
+    {
+        int id = 2;
+        switch (spectrum.getSpectrumType())
+        {
+            case ST::linear:      id = 1; break;
+            case ST::thirdOctave: id = 2; break;
+            case ST::critical:    id = 3; break;
+            case ST::fullOctave:  id = 4; break;
+        }
+        specTypeBox.setSelectedId (id, juce::dontSendNotification);
+    }
+
+    windowSizeBox.setSelectedId (spectrum.getWindowOrder() - 8, juce::dontSendNotification);
+
+    using WT = SpectrumDisplay::WinType;
+    {
+        int id = 1;
+        switch (spectrum.getWindowType())
+        {
+            case WT::hann:     id = 1; break;
+            case WT::hamming:  id = 2; break;
+            case WT::blackman: id = 3; break;
+            case WT::bartlett: id = 4; break;
+            case WT::kaiser:   id = 5; break;
+        }
+        windowTypeBox.setSelectedId (id, juce::dontSendNotification);
+    }
+
+    {
+        const float avg = spectrum.getAverageSeconds();
+        int id = 1;
+        if (avg < 0.0f)                                  id = 6;
+        else if (juce::approximatelyEqual (avg, 1.0f))   id = 2;
+        else if (juce::approximatelyEqual (avg, 3.0f))   id = 3;
+        else if (juce::approximatelyEqual (avg, 5.0f))   id = 4;
+        else if (juce::approximatelyEqual (avg, 10.0f))  id = 5;
+        averageBox.setSelectedId (id, juce::dontSendNotification);
+    }
+
+    {
+        const float ov = spectrum.getOverlapPercent();
+        int id = 2;
+        if      (juce::approximatelyEqual (ov, 0.0f))   id = 1;
+        else if (juce::approximatelyEqual (ov, 75.0f))  id = 3;
+        else if (juce::approximatelyEqual (ov, 87.5f))  id = 4;
+        overlapBox.setSelectedId (id, juce::dontSendNotification);
+    }
+
+    {
+        const float ph = spectrum.getPeakHoldMs();
+        int id = 4;
+        if (ph < 0.0f)                                     id = 7;
+        else if (juce::approximatelyEqual (ph, 5.0f))      id = 1;
+        else if (juce::approximatelyEqual (ph, 250.0f))    id = 2;
+        else if (juce::approximatelyEqual (ph, 500.0f))    id = 3;
+        else if (juce::approximatelyEqual (ph, 5000.0f))   id = 5;
+        else if (juce::approximatelyEqual (ph, 10000.0f))  id = 6;
+        peakHoldBox.setSelectedId (id, juce::dontSendNotification);
+    }
+
+    peakHoldToggle.setToggleState (spectrum.isPeakHoldShown(), juce::dontSendNotification);
+    peakHoldBox.setEnabled (spectrum.isPeakHoldShown());
+    freezeButton.setButtonText (spectrum.hasReferenceCurve() ? "Clear reference" : "Freeze reference");
 }
 
 //==============================================================================
@@ -235,6 +270,10 @@ void SpectrumSettingsPanel::resized()
         b.removeFromTop (gap);
     };
 
+    presetBar->setBounds (b.removeFromTop (presetBar->getPreferredHeight()));
+    b.removeFromTop (gap + 4);
+
+    row (channelCaption,    channelBox);
     row (specTypeCaption,   specTypeBox);
     row (windowSizeCaption, windowSizeBox);
     row (windowTypeCaption, windowTypeBox);
