@@ -228,7 +228,25 @@ void HistoryAnalyzer::exportData()
         auto f = fc.getResult();
         if (f == juce::File{}) return;
 
-        juce::String txt = "Frequency (Hz)\tLevel (dB)\n";
+        const char* algoNames[] = { "Spectrum", "Standard Autocorrelation", "Cuberoot Autocorrelation",
+                                    "Enhanced Autocorrelation", "Cepstrum" };
+        const char* winNames[]  = { "Rectangular", "Bartlett", "Hamming", "Hann", "Blackman",
+                                    "Blackman-Harris", "Welch", "Gaussian a=2.5", "Gaussian a=3.5", "Gaussian a=4.5" };
+
+        const double s0 = processorRef.getSelectionStartSeconds();
+        const double s1 = processorRef.getSelectionEndSeconds();
+        const juce::String section = (s1 > s0) ? juce::String (s0, 2) + " - " + juce::String (s1, 2) + " s"
+                                               : juce::String ("whole song");
+        const juce::String file = processorRef.getLoadedFile().getFileName();
+
+        juce::String txt;
+        txt << "# EERIE - Mix Analyzer  |  Plot Spectrum (section analysis)\n";
+        txt << "# Source: "    << (file.isNotEmpty() ? file : juce::String ("(none)")) << "\n";
+        txt << "# Section: "   << section << "\n";
+        txt << "# Algorithm: " << algoNames[juce::jlimit (0, 4, (int) algo)] << "\n";
+        txt << "# Size: "      << fftSizeSel << "   Window: " << winNames[juce::jlimit (0, 9, windowType)] << "\n";
+        txt << "# Axis: "      << (axis == Axis::linFreq ? "Linear frequency" : "Log frequency") << "\n";
+        txt << "Frequency (Hz)\tLevel (dB)\n";
         for (const auto& p : result)
             txt << juce::String (p.freq, 2) << "\t" << juce::String (p.db, 2) << "\n";
 

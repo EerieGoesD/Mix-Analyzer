@@ -33,10 +33,31 @@ void SoundFieldDisplay::clearHistory()
     repaint();
 }
 
+juce::String SoundFieldDisplay::metaHeader() const
+{
+    const double s0 = proc.getSelectionStartSeconds();
+    const double s1 = proc.getSelectionEndSeconds();
+    const juce::String section = (s1 > s0) ? juce::String (s0, 2) + " - " + juce::String (s1, 2) + " s"
+                                           : juce::String ("whole song");
+    const juce::String file = proc.getLoadedFileName().isNotEmpty()
+                                  ? proc.getLoadedFileName() : juce::String ("(none)");
+    const char* vm = vectorMode == VectorMode::lissajous   ? "Lissajous"
+                   : vectorMode == VectorMode::polarSample ? "Polar sample" : "Polar level";
+    const char* dm = detectMethod == DetectMethod::peak ? "Peak"
+                   : detectMethod == DetectMethod::rms  ? "RMS" : "Envelope";
+
+    juce::String h;
+    h << "# Source: "      << file << "\r\n";
+    h << "# Section: "     << section << "\r\n";
+    h << "# Vectorscope: " << vm << "   Detection: " << dm << "\r\n";
+    return h;
+}
+
 juce::String SoundFieldDisplay::getSnapshotText() const
 {
     juce::String t;
-    t << "EERIE - Mix Analyzer  |  Sound Field\r\n";
+    t << "# EERIE - Mix Analyzer  |  Sound Field\r\n";
+    t << metaHeader();
     t << "Correlation\t" << juce::String (correlation, 2) << "\r\n";
     t << "Balance\t"     << fmtBalance (balance) << "\r\n";
     t << "Width\t"       << juce::String (width, 2) << "\r\n";
@@ -55,14 +76,19 @@ void SoundFieldDisplay::captureRecordFrame()
 
 juce::String SoundFieldDisplay::getRecordingText() const
 {
-    juce::String txt = "Time (s),Correlation,Balance,Width\n";
+    juce::String txt;
+    txt << "# EERIE - Mix Analyzer  |  Sound Field recorded over time\r\n";
+    txt << metaHeader();
+    txt << "# Interval: every " << recordIntervalSec << " s\r\n";
+    txt << "Time (s),Correlation,Balance,Width\r\n";
+
     for (size_t r = 0; r < recordFrames.size(); ++r)
     {
         const auto& f = recordFrames[r];
         txt << juce::String ((int) r * recordIntervalSec) << ","
             << juce::String (f.corr, 3) << ","
             << juce::String (f.bal, 3)  << ","
-            << juce::String (f.wid, 3)  << "\n";
+            << juce::String (f.wid, 3)  << "\r\n";
     }
     return txt;
 }
@@ -98,6 +124,9 @@ void SoundFieldDisplay::applySettingsString (const juce::String& s)
 //==============================================================================
 void SoundFieldDisplay::timerCallback()
 {
+    if (! isVisible())   // skip the vectorscope/correlation work when this meter is switched off
+        return;
+
     proc.copyLatestStereo (bufL.data(), bufR.data(), drawN);
 
     double sLL = 0.0, sRR = 0.0, sLR = 0.0, sMid = 0.0, sSide = 0.0;

@@ -46,6 +46,7 @@ public:
 
 private:
     void timerCallback() override;
+    juce::String metaHeader() const;   // source / section / scope settings for exports
     void captureRecordFrame();
 
     MixAnalyzerAudioProcessor& proc;

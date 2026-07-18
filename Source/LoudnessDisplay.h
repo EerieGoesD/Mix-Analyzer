@@ -62,6 +62,7 @@ public:
 
 private:
     void timerCallback() override;
+    juce::String metaHeader() const;   // source / section / units for exports
     void getGraphWindow (float& topLufs, float& botLufs) const;
     float toDisplay (float lufs) const;   // absolute LUFS or LU relative to target
     void captureRecordFrame();

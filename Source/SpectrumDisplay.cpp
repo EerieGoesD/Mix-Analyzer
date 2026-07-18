@@ -223,13 +223,73 @@ void SpectrumDisplay::clearReference()
     repaint();
 }
 
+juce::String SpectrumDisplay::settingsSummary() const
+{
+    auto specName = [this]() -> const char*
+    {
+        switch (specType)
+        {
+            case SpecType::linear:      return "Linear";
+            case SpecType::thirdOctave: return "1/3 Octave";
+            case SpecType::critical:    return "Critical (Bark)";
+            case SpecType::fullOctave:  return "Full Octave";
+        }
+        return "?";
+    };
+    auto winName = [this]() -> const char*
+    {
+        switch (windowType)
+        {
+            case WinType::hann:     return "Hann";
+            case WinType::hamming:  return "Hamming";
+            case WinType::blackman: return "Blackman";
+            case WinType::bartlett: return "Bartlett";
+            case WinType::kaiser:   return "Kaiser";
+        }
+        return "?";
+    };
+
+    juce::String avg = averageSeconds < 0.0f ? juce::String ("Infinite")
+                     : averageSeconds <= 0.0f ? juce::String ("Real-time")
+                                              : juce::String (averageSeconds, 0) + " sec";
+
+    const double s0 = processorRef.getSelectionStartSeconds();
+    const double s1 = processorRef.getSelectionEndSeconds();
+    const juce::String section = (s1 > s0) ? juce::String (s0, 2) + " - " + juce::String (s1, 2) + " s"
+                                           : juce::String ("whole song");
+    const juce::String file = processorRef.getLoadedFileName().isNotEmpty()
+                                  ? processorRef.getLoadedFileName() : juce::String ("(none)");
+
+    juce::String h;
+    h << "# Source: "        << file << "\n";
+    h << "# Section: "       << section << "\n";
+    h << "# Channel: "       << (channel == Channel::side ? "Side (stereo width)" : "Mono (sum)") << "\n";
+    h << "# Spectrum type: " << specName() << "\n";
+    h << "# Window: "        << juce::String (1 << windowOrder) << " samples, " << winName() << "\n";
+    h << "# Averaging: "     << avg << "   Overlap: " << juce::String (overlapPercent, 1) << "%\n";
+    return h;
+}
+
 juce::String SpectrumDisplay::getExportText() const
 {
-    juce::String txt = "Frequency (Hz)\tLevel (dB)\n";
+    const bool ph = showPeakHold;
+
+    juce::String txt;
+    txt << "# EERIE - Mix Analyzer  |  Live Spectrum snapshot\n";
+    txt << settingsSummary();
+    txt << (ph ? "Frequency (Hz)\tLevel (dB)\tPeak Hold (dB)\n"
+               : "Frequency (Hz)\tLevel (dB)\n");
+
     for (size_t s = 0; s < slots.size(); ++s)
     {
         const float db = juce::jmap (juce::jlimit (0.0f, 1.0f, dispLevel[s]), 0.0f, 1.0f, mindB, maxdB);
-        txt << juce::String (slots[s].centreHz, 2) << "\t" << juce::String (db, 2) << "\n";
+        txt << juce::String (slots[s].centreHz, 2) << "\t" << juce::String (db, 2);
+        if (ph)
+        {
+            const float pk = juce::jmap (juce::jlimit (0.0f, 1.0f, dispPeak[s]), 0.0f, 1.0f, mindB, maxdB);
+            txt << "\t" << juce::String (pk, 2);
+        }
+        txt << "\n";
     }
     return txt;
 }
@@ -237,6 +297,9 @@ juce::String SpectrumDisplay::getExportText() const
 //==============================================================================
 void SpectrumDisplay::timerCallback()
 {
+    if (! isVisible())   // skip the FFT work when this meter is switched off
+        return;
+
     computeFrame();
 
     if (recording)
@@ -285,7 +348,12 @@ void SpectrumDisplay::captureRecordFrame()
 
 juce::String SpectrumDisplay::getRecordingText() const
 {
-    juce::String txt = "Time (s)";
+    juce::String txt;
+    txt << "# EERIE - Mix Analyzer  |  Recorded Spectrum (over time)\n";
+    txt << settingsSummary();
+    txt << "# Interval: every " << recordIntervalSec << " s\n";
+
+    txt << "Time (s)";
     for (float f : recordFreqs) txt << "," << juce::String (f, 1);
     txt << "\n";
 

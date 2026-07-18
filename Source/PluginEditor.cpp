@@ -415,12 +415,16 @@ MixAnalyzerAudioProcessorEditor::MixAnalyzerAudioProcessorEditor (MixAnalyzerAud
     setSize (820, 580);
     startTimerHz (60);
 
-    // Keep keyboard focus on the editor so the spacebar transport shortcuts work
-    // no matter which control was last clicked. (Text entry lives in pop-over
-    // windows, which have their own focus, so typing spaces there still works.)
-    for (auto* ch : getChildren())
-        ch->setWantsKeyboardFocus (false);
-    setWantsKeyboardFocus (true);
+    // Standalone only: keep keyboard focus on the editor so the spacebar transport
+    // shortcuts work no matter which control was last clicked. In a plugin we must
+    // NOT grab focus - that would steal it from the host. (Text entry lives in
+    // pop-over windows with their own focus, so typing spaces there still works.)
+    if (processorRef.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+    {
+        for (auto* ch : getChildren())
+            ch->setWantsKeyboardFocus (false);
+        setWantsKeyboardFocus (true);
+    }
 }
 
 MixAnalyzerAudioProcessorEditor::~MixAnalyzerAudioProcessorEditor()
@@ -437,18 +441,21 @@ void MixAnalyzerAudioProcessorEditor::parentHierarchyChanged()
     if (auto* dw = dynamic_cast<juce::DocumentWindow*> (getTopLevelComponent()))
         dw->setTitleBarButtonsRequired (juce::DocumentWindow::allButtons, false);
 
-    if (isShowing())
-        grabKeyboardFocus();   // so the spacebar shortcuts work right away
+    // Grab focus for the spacebar shortcuts only in the standalone app, never in a
+    // plugin (where taking focus would break the host's keyboard).
+    if (isShowing()
+        && processorRef.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+        grabKeyboardFocus();
 }
 
 bool MixAnalyzerAudioProcessorEditor::keyPressed (const juce::KeyPress& key)
 {
-    if (key.getKeyCode() == juce::KeyPress::spaceKey)
+    // Only handle Space when we actually have a song to drive. With no file (e.g.
+    // the plugin metering a DAW's audio) let the key pass through to the host, so
+    // the host's own spacebar transport keeps working.
+    if (key.getKeyCode() == juce::KeyPress::spaceKey && processorRef.hasFileLoaded())
     {
-        if (! processorRef.hasFileLoaded())
-            return true;
-
-        if (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown())
+        if (key.getModifiers().isCtrlDown())
         {
             // Ctrl + Space: start from the beginning.
             processorRef.restart();
@@ -564,11 +571,10 @@ void MixAnalyzerAudioProcessorEditor::showLayoutPicker()
     for (bool b : meterOn) if (b) ++n;
     n = juce::jmax (1, n);
 
-    auto picker = std::make_unique<LayoutPicker> (n, layoutIndex, [this] (int idx)
+    juce::Component::SafePointer<MixAnalyzerAudioProcessorEditor> self (this);
+    auto picker = std::make_unique<LayoutPicker> (n, layoutIndex, [self] (int idx)
     {
-        layoutIndex = idx;
-        resized();
-        repaint();
+        if (self != nullptr) { self->layoutIndex = idx; self->resized(); self->repaint(); }
     });
     picker->setLookAndFeel (&lookAndFeel);
     juce::CallOutBox::launchAsynchronously (std::move (picker),
@@ -597,7 +603,10 @@ void MixAnalyzerAudioProcessorEditor::showMeterMenu (int meter)
         interval = &loudnessIntervalBox; more = &loudnessMoreButton;
     }
 
-    auto fire = [] (juce::TextButton* b) { if (b->onClick) b->onClick(); };
+    // Guard every async callback: if the editor is gone by the time the item is
+    // clicked, do nothing (the buttons are our members, so they die with us).
+    juce::Component::SafePointer<MixAnalyzerAudioProcessorEditor> self (this);
+    auto fire = [self] (juce::TextButton* b) { if (self != nullptr && b->onClick) b->onClick(); };
 
     juce::PopupMenu m;
     m.addItem ("Settings...", [settings, fire] { fire (settings); });
@@ -611,7 +620,7 @@ void MixAnalyzerAudioProcessorEditor::showMeterMenu (int meter)
     {
         const int id = i + 1;
         iv.addItem (labels[i], true, interval->getSelectedId() == id,
-                    [interval, id] { interval->setSelectedId (id, juce::sendNotification); });
+                    [self, interval, id] { if (self != nullptr) interval->setSelectedId (id, juce::sendNotification); });
     }
     m.addSubMenu ("Record interval", iv);
 
@@ -746,17 +755,17 @@ void MixAnalyzerAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.fillAll (MixColours::bg);
 
-    // Header: app name in indigo with a soft glow (shifted right for the layout button).
-    auto header = getLocalBounds().removeFromTop (34).reduced (16, 0).withTrimmedLeft (84);
+    // Header: app name in indigo with a soft glow, on the left.
+    auto header = getLocalBounds().removeFromTop (34).reduced (16, 0);
 
     g.setColour (MixColours::accent.withAlpha (0.35f));
     g.setFont (MixLookAndFeel::uiFont (19.0f, true));
     for (auto d : { juce::Point<int> (0, 1), juce::Point<int> (1, 0) })
-        g.drawText ("EERIE | Mix Analyzer", header.translated (d.x, d.y),
+        g.drawText ("Umbra by EERIE", header.translated (d.x, d.y),
                     juce::Justification::centredLeft);
 
     g.setColour (MixColours::accentH);
-    g.drawText ("EERIE | Mix Analyzer", header, juce::Justification::centredLeft);
+    g.drawText ("Umbra by EERIE", header, juce::Justification::centredLeft);
 
     // Section captions (uppercase, dimmed).
     auto drawCaption = [&g] (juce::Rectangle<int> area, const juce::String& t)
@@ -797,7 +806,10 @@ void MixAnalyzerAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
 
-    layoutButton.setBounds (12, 5, 78, 24);   // top-left of the header
+    // Layout button sits right after the title on the left.
+    const int titleW = juce::GlyphArrangement::getStringWidthInt (
+                           MixLookAndFeel::uiFont (19.0f, true), "Umbra by EERIE");
+    layoutButton.setBounds (16 + titleW + 16, 6, 78, 22);
     bounds.removeFromTop (34);   // header (painted)
 
     // Footer links along the very bottom, right-aligned and tight.
@@ -920,13 +932,12 @@ void MixAnalyzerAudioProcessorEditor::layoutMeterTile (int meter, juce::Rectangl
     {
         if (compact)
         {
+            // Too narrow for a button row: everything (including Record) goes into
+            // the "more" menu, so the header can never overflow.
             settings.setVisible (false); snapshot.setVisible (false);
-            screenshot.setVisible (false); interval.setVisible (false);
+            screenshot.setVisible (false); interval.setVisible (false); record.setVisible (false);
             more.setVisible (true);
             more.setBounds (hdr.removeFromRight (30).withSizeKeepingCentre (30, 22));
-            hdr.removeFromRight (4);
-            record.setVisible (true);
-            record.setBounds (hdr.removeFromRight (88).withSizeKeepingCentre (88, 22));
         }
         else
         {
@@ -947,9 +958,11 @@ void MixAnalyzerAudioProcessorEditor::layoutMeterTile (int meter, juce::Rectangl
 
     if (meter == 0)   // Spectrum: Live/History tabs (left) + tools (right)
     {
-        liveTabButton.setBounds    (hdr.removeFromLeft (56).withSizeKeepingCentre (56, 22));
+        const int liveW = compact ? 46 : 56;
+        const int histW = compact ? 58 : 70;
+        liveTabButton.setBounds    (hdr.removeFromLeft (liveW).withSizeKeepingCentre (liveW, 22));
         hdr.removeFromLeft (4);
-        historyTabButton.setBounds (hdr.removeFromLeft (70).withSizeKeepingCentre (70, 22));
+        historyTabButton.setBounds (hdr.removeFromLeft (histW).withSizeKeepingCentre (histW, 22));
 
         if (! historyMode)
         {

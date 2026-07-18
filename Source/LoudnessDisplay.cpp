@@ -37,10 +37,26 @@ void LoudnessDisplay::clearHistory()
     repaint();
 }
 
+juce::String LoudnessDisplay::metaHeader() const
+{
+    const double s0 = proc.getSelectionStartSeconds();
+    const double s1 = proc.getSelectionEndSeconds();
+    const juce::String section = (s1 > s0) ? juce::String (s0, 2) + " - " + juce::String (s1, 2) + " s"
+                                           : juce::String ("whole song");
+    const juce::String file = proc.getLoadedFileName().isNotEmpty()
+                                  ? proc.getLoadedFileName() : juce::String ("(none)");
+    juce::String h;
+    h << "# Source: "  << file << "\r\n";
+    h << "# Section: " << section << "\r\n";
+    h << "# Values are absolute LUFS / LU / dBTP (the Relative display scale does not change this file)\r\n";
+    return h;
+}
+
 juce::String LoudnessDisplay::getSnapshotText() const
 {
     juce::String t;
-    t << "EERIE - Mix Analyzer  |  Loudness (EBU R128 / BS.1770)\r\n";
+    t << "# EERIE - Mix Analyzer  |  Loudness (EBU R128 / BS.1770)\r\n";
+    t << metaHeader();
     t << "Momentary\t"      << fmtLufs (mLufs) << " LUFS\r\n";
     t << "Short-term\t"     << fmtLufs (sLufs) << " LUFS\r\n";
     t << "Integrated\t"     << fmtLufs (iLufs) << " LUFS\r\n";
@@ -114,6 +130,9 @@ float LoudnessDisplay::toDisplay (float lufs) const
 
 void LoudnessDisplay::timerCallback()
 {
+    if (! isVisible())   // skip the EBU R128 queries when this meter is switched off
+        return;
+
     proc.updateLoudnessReadings();   // do the heavy EBU R128 queries here, not on the audio thread
 
     mLufs = proc.getMomentaryLufs();
@@ -167,15 +186,19 @@ juce::String LoudnessDisplay::getRecordingText() const
 {
     auto cell = [] (float v) { return v <= kNoSignal ? juce::String ("-inf") : juce::String (v, 1); };
 
-    juce::String txt = "Time (s),Momentary (LUFS),Short-term (LUFS),"
-                       "Integrated (LUFS),Range (LU),True Peak (dBTP)\n";
+    juce::String txt;
+    txt << "# EERIE - Mix Analyzer  |  Loudness recorded over time\r\n";
+    txt << metaHeader();
+    txt << "# Interval: every " << recordIntervalSec << " s\r\n";
+    txt << "Time (s),Momentary (LUFS),Short-term (LUFS),"
+           "Integrated (LUFS),Range (LU),True Peak (dBTP)\r\n";
 
     for (size_t r = 0; r < recordFrames.size(); ++r)
     {
         const auto& f = recordFrames[r];
         txt << juce::String ((int) r * recordIntervalSec) << ","
             << cell (f.m) << "," << cell (f.s) << "," << cell (f.i) << ","
-            << juce::String (f.lra, 1) << "," << cell (f.tp) << "\n";
+            << juce::String (f.lra, 1) << "," << cell (f.tp) << "\r\n";
     }
     return txt;
 }

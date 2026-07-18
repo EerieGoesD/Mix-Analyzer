@@ -82,6 +82,7 @@ public:
 
 private:
     void timerCallback() override;
+    juce::String settingsSummary() const;   // metadata header for exports
     void rebuildFft();
     void fillWindowTable();
     void rebuildSlots (double sampleRate);           // slot = bin (linear) or band (octave)
