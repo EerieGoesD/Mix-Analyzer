@@ -34,6 +34,11 @@ juce::Font MixLookAndFeel::monoFont (float height)
     return juce::Font (juce::FontOptions ("Consolas", height, juce::Font::plain));
 }
 
+juce::Font MixLookAndFeel::getPopupMenuFont()
+{
+    return uiFont (14.0f);   // JUCE's default is 17pt - too large here
+}
+
 //==============================================================================
 void MixLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button,
                                            const juce::Colour& backgroundColour,

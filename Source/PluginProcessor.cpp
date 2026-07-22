@@ -137,6 +137,11 @@ void MixAnalyzerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             ebur128_add_frames_float (st, interleaved, (size_t) numSamples);
         }
     }
+
+    // Monitoring volume for the loaded song. Applied AFTER the meter taps above,
+    // so changing the playback volume never changes the measured spectrum/loudness.
+    if (fileIsLoaded.load())
+        buffer.applyGain (playbackGain.load());
 }
 
 //==============================================================================
@@ -170,6 +175,102 @@ void MixAnalyzerAudioProcessor::updateLoudnessReadings()
             peak = juce::jmax (peak, p);
     }
     truePeakDb.store (peak > 0.0 ? (float) (20.0 * std::log10 (peak)) : -300.0f);
+}
+
+//==============================================================================
+MixAnalyzerAudioProcessor::OfflineLoudness
+MixAnalyzerAudioProcessor::analyzeFileLoudness (bool wholeSong)
+{
+    OfflineLoudness out;
+    out.wholeSong = wholeSong;
+
+    if (loadedFile == juce::File{} || ! loadedFile.existsAsFile())
+    {
+        out.message = "Load a song first.";
+        return out;
+    }
+
+    std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (loadedFile));
+    if (reader == nullptr || reader->sampleRate <= 0.0)
+    {
+        out.message = "Could not read the file.";
+        return out;
+    }
+
+    const double sr     = reader->sampleRate;
+    const double lenSec = (double) reader->lengthInSamples / sr;
+
+    // Whole song, or the current selection (falling back to whole song if none).
+    double s0 = 0.0, s1 = lenSec;
+    if (! wholeSong)
+    {
+        const double a = getSelectionStartSeconds();
+        const double b = getSelectionEndSeconds();
+        if (b > a) { s0 = a; s1 = juce::jmin (b, lenSec); }
+        else       { out.wholeSong = true; }   // no real selection -> whole song
+    }
+    out.startSec = s0;
+    out.endSec   = s1;
+
+    const juce::int64 startSamp = (juce::int64) (s0 * sr);
+    const juce::int64 endSamp   = juce::jmin ((juce::int64) (s1 * sr), reader->lengthInSamples);
+    juce::int64 remaining = endSamp - startSamp;
+    if (remaining < 64)
+    {
+        out.message = "Section too short to measure.";
+        return out;
+    }
+
+    const int channels = juce::jmax (1, (int) reader->numChannels);
+
+    ebur128_state* st = ebur128_init ((unsigned) channels, (unsigned long) sr,
+                                      EBUR128_MODE_I | EBUR128_MODE_LRA | EBUR128_MODE_TRUE_PEAK);
+    if (st == nullptr)
+    {
+        out.message = "Could not start the loudness measurement.";
+        return out;
+    }
+
+    // Stream the region through the meter in blocks, interleaved to match ebur128.
+    const int readBlock = 32768;
+    juce::AudioBuffer<float> buf (channels, readBlock);
+    std::vector<float> interleaved ((size_t) readBlock * (size_t) channels, 0.0f);
+
+    juce::int64 pos = startSamp;
+    while (remaining > 0)
+    {
+        const int n = (int) juce::jmin ((juce::int64) readBlock, remaining);
+        buf.clear();
+        reader->read (&buf, 0, n, pos, true, true);
+
+        for (int i = 0; i < n; ++i)
+            for (int c = 0; c < channels; ++c)
+                interleaved[(size_t) (i * channels + c)] = buf.getReadPointer (c)[i];
+
+        ebur128_add_frames_float (st, interleaved.data(), (size_t) n);
+
+        pos       += n;
+        remaining -= n;
+    }
+
+    double v = 0.0;
+    if (ebur128_loudness_global (st, &v) == EBUR128_SUCCESS)
+        out.integrated = std::isfinite (v) ? (float) v : -300.0f;
+    if (ebur128_loudness_range (st, &v) == EBUR128_SUCCESS)
+        out.range = std::isfinite (v) ? (float) v : 0.0f;
+
+    double peak = 0.0;
+    for (int c = 0; c < channels; ++c)
+    {
+        double p = 0.0;
+        if (ebur128_true_peak (st, (unsigned) c, &p) == EBUR128_SUCCESS)
+            peak = juce::jmax (peak, p);
+    }
+    out.truePeak = peak > 0.0 ? (float) (20.0 * std::log10 (peak)) : -300.0f;
+
+    ebur128_destroy (&st);
+    out.ok = true;
+    return out;
 }
 
 //==============================================================================
@@ -394,6 +495,11 @@ double MixAnalyzerAudioProcessor::getCurrentPositionSeconds() const
 double MixAnalyzerAudioProcessor::getLengthSeconds() const
 {
     return transportSource.getLengthInSeconds();
+}
+
+void MixAnalyzerAudioProcessor::setPlaybackGain (float gain)
+{
+    playbackGain.store (juce::jlimit (0.0f, 1.0f, gain));
 }
 
 //==============================================================================

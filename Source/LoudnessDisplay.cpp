@@ -66,6 +66,27 @@ juce::String LoudnessDisplay::getSnapshotText() const
     return t;
 }
 
+juce::String LoudnessDisplay::getOfflineSnapshotText (const MixAnalyzerAudioProcessor::OfflineLoudness& r) const
+{
+    const juce::String section = r.wholeSong
+        ? juce::String ("whole song")
+        : juce::String (r.startSec, 2) + " - " + juce::String (r.endSec, 2) + " s";
+    const juce::String file = proc.getLoadedFileName().isNotEmpty()
+                                  ? proc.getLoadedFileName() : juce::String ("(none)");
+
+    juce::String t;
+    t << "# EERIE - Mix Analyzer  |  Loudness (EBU R128 / BS.1770)\r\n";
+    t << "# Source: "  << file << "\r\n";
+    t << "# Section: " << section << "\r\n";
+    t << "# Measured directly from the file (no playback needed)\r\n";
+    t << "# Values are absolute LUFS / LU / dBTP\r\n";
+    t << "Integrated\t"     << fmtLufs (r.integrated) << " LUFS\r\n";
+    t << "Loudness Range\t" << juce::String (r.range, 1) << " LU\r\n";
+    t << "True Peak\t"      << (r.truePeak <= kNoSignal ? juce::String ("-inf")
+                                                        : juce::String (r.truePeak, 1)) << " dBTP\r\n";
+    return t;
+}
+
 //==============================================================================
 juce::String LoudnessDisplay::getSettingsString() const
 {

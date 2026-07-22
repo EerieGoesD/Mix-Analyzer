@@ -23,6 +23,10 @@ public:
     void clearHistory();                 // wipe the graph (new song / stop)
     juce::String getSnapshotText() const; // current readings as text
 
+    // Format a whole-song / selection measurement (read straight from the file)
+    // into the same style of snapshot text.
+    juce::String getOfflineSnapshotText (const MixAnalyzerAudioProcessor::OfflineLoudness&) const;
+
     // Record the readings over time and export them as a CSV time-series.
     void setRecordIntervalSeconds (int seconds);   // 1, 2, 5, 10, 30 ...
     void startRecording();

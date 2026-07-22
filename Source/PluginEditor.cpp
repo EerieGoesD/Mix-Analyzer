@@ -37,6 +37,20 @@ MixAnalyzerAudioProcessorEditor::MixAnalyzerAudioProcessorEditor (MixAnalyzerAud
     fileLabel.setColour (juce::Label::textColourId, MixColours::textDim);
     fileLabel.setJustificationType (juce::Justification::centredLeft);
 
+    addAndMakeVisible (timeLabel);
+    timeLabel.setText ("", juce::dontSendNotification);
+    timeLabel.setFont (MixLookAndFeel::monoFont (12.5f));
+    timeLabel.setColour (juce::Label::textColourId, MixColours::textDim);
+    timeLabel.setJustificationType (juce::Justification::centredRight);
+
+    addAndMakeVisible (volumeSlider);
+    volumeSlider.setSliderStyle (juce::Slider::LinearVertical);
+    volumeSlider.setRange (0.0, 1.0, 0.01);
+    volumeSlider.setValue (1.0, juce::dontSendNotification);
+    volumeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    volumeSlider.setTooltip ("Playback volume of the loaded song. Does not change the analysis.");
+    volumeSlider.onValueChange = [this] { processorRef.setPlaybackGain ((float) volumeSlider.getValue()); };
+
     loadButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     loadButton.onClick = [this] { openFileChooser(); };
 
@@ -84,18 +98,8 @@ MixAnalyzerAudioProcessorEditor::MixAnalyzerAudioProcessorEditor (MixAnalyzerAud
     // Loudness: Snapshot (one moment, txt) ----------------------------------
     addChildComponent (loudnessSnapshotButton);
     loudnessSnapshotButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
-    loudnessSnapshotButton.setTooltip ("Save the loudness readings exactly as they are right now - one single moment.");
-    loudnessSnapshotButton.onClick = [this]
-    {
-        chooser = std::make_unique<juce::FileChooser> ("Export loudness snapshot", juce::File{}, "*.txt");
-        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
-                              [this] (const juce::FileChooser& fc)
-        {
-            const auto f = fc.getResult();
-            if (f != juce::File{})
-                f.replaceWithText (loudness.getSnapshotText());
-        });
-    };
+    loudnessSnapshotButton.setTooltip ("Measure the whole song (or your selection) straight from the file and save it as a .txt - no need to play it through.");
+    loudnessSnapshotButton.onClick = [this] { showLoudnessSnapshotMenu(); };
 
     // Loudness: record interval --------------------------------------------
     addChildComponent (loudnessIntervalBox);
@@ -506,6 +510,17 @@ void MixAnalyzerAudioProcessorEditor::setWaveformVisible (bool shouldShow)
 }
 
 //==============================================================================
+namespace
+{
+    // mm:ss:cs (centiseconds), matching the requested 03:40:32 style.
+    juce::String fmtClock (double seconds)
+    {
+        if (seconds < 0.0) seconds = 0.0;
+        const int cs = juce::roundToInt (seconds * 100.0);
+        return juce::String::formatted ("%02d:%02d:%02d", (cs / 100) / 60, (cs / 100) % 60, cs % 100);
+    }
+}
+
 void MixAnalyzerAudioProcessorEditor::timerCallback()
 {
     // Animate the sidebar width (smooth slide in/out).
@@ -528,6 +543,22 @@ void MixAnalyzerAudioProcessorEditor::timerCallback()
         waveform.setPlayheadProportion (processorRef.getCurrentPositionSeconds() / len);
     else
         waveform.setPlayheadProportion (-1.0);
+
+    // Duration readout: current / total, following any selected section.
+    if (processorRef.hasFileLoaded())
+    {
+        const double s0 = processorRef.getSelectionStartSeconds();
+        const double s1 = processorRef.getSelectionEndSeconds();
+        const bool   sel = s1 > s0;
+        const double total = sel ? (s1 - s0) : processorRef.getLengthSeconds();
+        double cur = processorRef.getCurrentPositionSeconds() - (sel ? s0 : 0.0);
+        cur = juce::jlimit (0.0, juce::jmax (0.0, total), cur);
+        timeLabel.setText (fmtClock (cur) + " / " + fmtClock (total), juce::dontSendNotification);
+    }
+    else
+    {
+        timeLabel.setText ("", juce::dontSendNotification);
+    }
 
     updateTransportUI();
 }
@@ -625,6 +656,58 @@ void MixAnalyzerAudioProcessorEditor::showMeterMenu (int meter)
     m.addSubMenu ("Record interval", iv);
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (more));
+}
+
+//==============================================================================
+void MixAnalyzerAudioProcessorEditor::showLoudnessSnapshotMenu()
+{
+    // In a DAW with no song loaded there is nothing to read from disk, so fall
+    // back to the old live one-moment snapshot.
+    if (! processorRef.hasFileLoaded())
+    {
+        saveLoudnessSnapshot (loudness.getSnapshotText());
+        return;
+    }
+
+    const bool hasSel = processorRef.getSelectionEndSeconds() > processorRef.getSelectionStartSeconds();
+
+    juce::Component::SafePointer<MixAnalyzerAudioProcessorEditor> self (this);
+
+    juce::PopupMenu m;
+    m.addItem (1, "Snapshot whole song");
+    m.addItem (2, "Snapshot selection", hasSel, false);
+    m.addSeparator();
+    m.addSectionHeader ("Measures straight from the file, then saves a .txt");
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&loudnessSnapshotButton),
+                     [self] (int result)
+    {
+        if (self == nullptr || result == 0)
+            return;
+
+        const auto r = self->processorRef.analyzeFileLoudness (result == 1);
+        if (! r.ok)
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                    "Loudness snapshot", r.message);
+            return;
+        }
+
+        self->saveLoudnessSnapshot (self->loudness.getOfflineSnapshotText (r));
+    });
+}
+
+//==============================================================================
+void MixAnalyzerAudioProcessorEditor::saveLoudnessSnapshot (const juce::String& text)
+{
+    chooser = std::make_unique<juce::FileChooser> ("Export loudness snapshot", juce::File{}, "*.txt");
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                          [text] (const juce::FileChooser& fc)
+    {
+        const auto f = fc.getResult();
+        if (f != juce::File{})
+            f.replaceWithText (text);
+    });
 }
 
 void MixAnalyzerAudioProcessorEditor::showHistory (bool showHist)
@@ -861,6 +944,7 @@ void MixAnalyzerAudioProcessorEditor::resized()
     waveformYes.setBounds   (controls.removeFromLeft (52));
     waveformNo.setBounds    (controls.removeFromLeft (50));
     controls.removeFromLeft (14);
+    timeLabel.setBounds (controls.removeFromRight (150));   // current / total, right of the name
     fileLabel.setBounds (controls);
 
     // Waveform: caption strip + panel, only when shown. When hidden, that space
@@ -868,11 +952,16 @@ void MixAnalyzerAudioProcessorEditor::resized()
     if (waveformVisible)
     {
         waveCaptionBounds = bounds.removeFromTop (20).reduced (16, 0);
-        waveform.setBounds (bounds.removeFromTop (110).reduced (16, 2));
+        auto waveRow = bounds.removeFromTop (110).reduced (16, 2);
+        volumeSlider.setBounds (waveRow.removeFromRight (30));
+        waveRow.removeFromRight (6);
+        waveform.setBounds (waveRow);
+        volumeSlider.setVisible (true);
     }
     else
     {
         waveCaptionBounds = {};
+        volumeSlider.setVisible (false);
     }
 
     // Meter section: collapsible left sidebar (nav) + the meter area to its right.

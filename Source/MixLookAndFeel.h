@@ -41,6 +41,8 @@ public:
 
     juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
 
+    juce::Font getPopupMenuFont() override;   // JUCE's 17pt default is too big for this UI
+
     void drawTickBox (juce::Graphics&, juce::Component&,
                       float x, float y, float w, float h,
                       bool ticked, bool isEnabled,

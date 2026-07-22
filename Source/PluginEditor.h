@@ -40,6 +40,8 @@ private:
     void updateNavHighlight();
     void showLayoutPicker();
     void showMeterMenu (int meter);     // the "more" menu for a narrow tile
+    void showLoudnessSnapshotMenu();                       // whole-song / selection offline snapshot
+    void saveLoudnessSnapshot (const juce::String& text);  // .txt save dialog
     static void setRecordVisual (juce::TextButton&, bool recording);   // red dot idle / red fill recording
 
     MixAnalyzerAudioProcessor& processorRef;
@@ -53,21 +55,21 @@ private:
     juce::Label        waveformLabel;                   // "Waveform" caption for the radios
     juce::ToggleButton waveformYes { "Yes" };           // radio group: show / hide the waveform
     juce::ToggleButton waveformNo  { "No" };
-    juce::TextButton settingsButton { "Settings" };
-    juce::TextButton loudnessSettingsButton { "Settings" };
+    juce::TextButton settingsButton { "Settings..." };
+    juce::TextButton loudnessSettingsButton { "Settings..." };
     juce::TextButton spectrumExportButton { "Snapshot" };
     juce::TextButton screenshotButton { "Screenshot" };
     juce::TextButton recordButton { "Record" };
     juce::ComboBox   recordIntervalBox;
 
     // Loudness meter's own record / snapshot / screenshot (mirrors the spectrum).
-    juce::TextButton loudnessSnapshotButton   { "Snapshot" };
+    juce::TextButton loudnessSnapshotButton   { "Snapshot..." };
     juce::TextButton loudnessScreenshotButton { "Screenshot" };
     juce::TextButton loudnessRecordButton     { "Record" };
     juce::ComboBox   loudnessIntervalBox;
 
     // Sound Field meter's own tools.
-    juce::TextButton soundFieldSettingsButton   { "Settings" };
+    juce::TextButton soundFieldSettingsButton   { "Settings..." };
     juce::TextButton soundFieldSnapshotButton   { "Snapshot" };
     juce::TextButton soundFieldScreenshotButton { "Screenshot" };
     juce::TextButton soundFieldRecordButton     { "Record" };
@@ -84,6 +86,8 @@ private:
     juce::HyperlinkButton feedbackLink  { "Feedback",        juce::URL ("https://github.com/EerieGoesD/Mix-Analyzer/discussions") };
     juce::HyperlinkButton featureLink   { "Suggest Feature", juce::URL ("https://github.com/EerieGoesD/Mix-Analyzer/issues/new?template=feature-request.md") };
     juce::Label fileLabel;
+    juce::Label timeLabel;              // current / total time above the waveform
+    juce::Slider volumeSlider;          // song monitoring volume, right of the waveform
     std::unique_ptr<juce::FileChooser> chooser;
 
     WaveformDisplay waveform;

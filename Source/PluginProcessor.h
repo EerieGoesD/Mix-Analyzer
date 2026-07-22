@@ -74,6 +74,8 @@ public:
     bool hasFileLoaded() const;
     juce::String getLoadedFileName() const;
 
+    void setPlaybackGain (float gain);   // monitoring level for the loaded song (analysis unaffected)
+
     // When looping is on, playback repeats (the section if one is selected,
     // otherwise the whole song). When off, it plays once and stops at the end.
     void setLoopEnabled (bool shouldLoop);
@@ -110,6 +112,25 @@ public:
     // never overrun an audio block. Feeding samples stays on the audio thread.
     void updateLoudnessReadings();
 
+    //==========================================================================
+    // Offline loudness measurement of the loaded file, read straight from disk -
+    // no playback needed. Measures the whole song, or the current selection when
+    // wholeSong is false. Only the whole-region figures make sense this way, so
+    // Momentary / Short-term are deliberately not reported.
+    struct OfflineLoudness
+    {
+        bool         ok         = false;
+        juce::String message;                 // set when ok == false
+        float        integrated = -300.0f;    // LUFS
+        float        range      = 0.0f;       // LU
+        float        truePeak   = -300.0f;    // dBTP
+        double       startSec   = 0.0;
+        double       endSec     = 0.0;        // the region actually measured
+        bool         wholeSong  = true;
+    };
+
+    OfflineLoudness analyzeFileLoudness (bool wholeSong);
+
 private:
     //==========================================================================
     void pushSample (float mid, float side) noexcept;   // spectrum: mono/mid + side rings
@@ -137,6 +158,7 @@ private:
     juce::File   loadedFile;
 
     std::atomic<bool> fileIsLoaded { false };
+    std::atomic<float> playbackGain { 1.0f };   // song monitoring volume (post-analysis)
     std::atomic<bool> requestStop  { false };
     std::atomic<double> selectionStart { 0.0 };
     std::atomic<double> selectionEnd   { 0.0 };
